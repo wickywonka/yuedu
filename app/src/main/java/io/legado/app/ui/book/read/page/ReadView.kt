@@ -105,15 +105,15 @@ class ReadView(context: Context, attrs: AttributeSet) :
     }
 
     private fun setRect9x() {
-        tlRect.set(0f, 0f, width * 0.33f, height * 0.33f)
+        tlRect.set(width * 0.08f, 0f, width * 0.33f, height * 0.33f)
         tcRect.set(width * 0.33f, 0f, width * 0.66f, height * 0.33f)
-        trRect.set(width * 0.36f, 0f, width.toFloat(), height * 0.33f)
-        mlRect.set(0f, height * 0.33f, width * 0.33f, height * 0.66f)
+        trRect.set(width * 0.36f, 0f, width.toFloat() - width * 0.08f, height * 0.33f)
+        mlRect.set(width * 0.08f, height * 0.33f, width * 0.33f, height * 0.66f)
         mcRect.set(width * 0.33f, height * 0.33f, width * 0.66f, height * 0.66f)
-        mrRect.set(width * 0.66f, height * 0.33f, width.toFloat(), height * 0.66f)
-        blRect.set(0f, height * 0.66f, width * 0.33f, height.toFloat())
-        bcRect.set(width * 0.33f, height * 0.66f, width * 0.66f, height.toFloat())
-        brRect.set(width * 0.66f, height * 0.66f, width.toFloat(), height.toFloat())
+        mrRect.set(width * 0.66f, height * 0.33f, width.toFloat() - width * 0.08f, height * 0.66f)
+        blRect.set(width * 0.08f, height * 0.66f, width * 0.33f, height.toFloat() - 50f)
+        bcRect.set(width * 0.33f, height * 0.66f, width * 0.66f, height.toFloat() - 50f)
+        brRect.set(width * 0.66f, height * 0.66f, width.toFloat() - width * 0.08f, height.toFloat() - 50f)
     }
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
