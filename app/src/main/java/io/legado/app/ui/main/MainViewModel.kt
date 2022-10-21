@@ -10,10 +10,14 @@ import io.legado.app.constant.EventBus
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookSource
+import io.legado.app.help.AppWebDav
 import io.legado.app.help.DefaultData
+import io.legado.app.help.book.BookHelp
+import io.legado.app.help.book.addType
+import io.legado.app.help.book.isLocal
+import io.legado.app.help.book.removeType
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.LocalConfig
-import io.legado.app.help.storage.AppWebDav
 import io.legado.app.model.CacheBook
 import io.legado.app.model.webBook.WebBook
 import io.legado.app.service.CacheBookService
@@ -57,7 +61,7 @@ class MainViewModel(application: Application) : BaseViewModel(application) {
     fun upToc(books: List<Book>) {
         execute(context = upTocPool) {
             books.filter {
-                it.origin != BookType.local && it.canUpdate
+                !it.isLocal && it.canUpdate
             }.let {
                 addToWaitUp(it)
             }
@@ -109,34 +113,55 @@ class MainViewModel(application: Application) : BaseViewModel(application) {
         }
         val source = appDb.bookSourceDao.getBookSource(book.origin)
         if (source == null) {
+            book.addType(BookType.updateError)
+            appDb.bookDao.update(book)
             waitUpTocBooks.remove(book.bookUrl)
             return
         }
-        waitUpTocBooks.remove(book.bookUrl)
-        onUpTocBooks.add(book.bookUrl)
-        postEvent(EventBus.UP_BOOKSHELF, book.bookUrl)
+        waitUpTocBooks.remove(bookUrl)
+        upTocAdd(bookUrl)
         execute(context = upTocPool) {
+            val oldBook = book.copy()
+            WebBook.runPreUpdateJs(source, book)
             if (book.tocUrl.isBlank()) {
-                WebBook.getBookInfoAwait(this, source, book)
+                WebBook.getBookInfoAwait(source, book)
             }
-            val toc = WebBook.getChapterListAwait(this, source, book).getOrThrow()
-            appDb.bookDao.update(book)
-            appDb.bookChapterDao.delByBook(book.bookUrl)
+            val toc = WebBook.getChapterListAwait(source, book).getOrThrow()
+            book.removeType(BookType.updateError)
+            if (book.bookUrl == bookUrl) {
+                appDb.bookDao.update(book)
+            } else {
+                upTocAdd(book.bookUrl)
+                appDb.bookDao.insert(book)
+                BookHelp.updateCacheFolder(oldBook, book)
+            }
+            appDb.bookChapterDao.delByBook(bookUrl)
             appDb.bookChapterDao.insert(*toc.toTypedArray())
             addDownload(source, book)
         }.onError(upTocPool) {
+            book.addType(BookType.updateError)
+            appDb.bookDao.update(book)
             AppLog.put("${book.name} 更新目录失败\n${it.localizedMessage}", it)
         }.onCancel(upTocPool) {
+            upTocCancel(bookUrl)
             upTocCancel(book.bookUrl)
         }.onFinally(upTocPool) {
+            upTocFinally(bookUrl)
             upTocFinally(book.bookUrl)
         }
+    }
+
+    @Synchronized
+    private fun upTocAdd(bookUrl: String) {
+        onUpTocBooks.add(bookUrl)
+        postEvent(EventBus.UP_BOOKSHELF, bookUrl)
     }
 
     @Synchronized
     private fun upTocCancel(bookUrl: String) {
         onUpTocBooks.remove(bookUrl)
         waitUpTocBooks.add(bookUrl)
+        postEvent(EventBus.UP_BOOKSHELF, bookUrl)
     }
 
     @Synchronized
@@ -166,21 +191,20 @@ class MainViewModel(application: Application) : BaseViewModel(application) {
         cacheBookJob?.cancel()
         cacheBookJob = viewModelScope.launch(upTocPool) {
             while (isActive) {
-                if (CacheBookService.isRun) {
-                    cacheBookJob?.cancel()
-                    cacheBookJob = null
-                    return@launch
-                }
-                if (!CacheBook.isRun) {
+                if (CacheBookService.isRun || !CacheBook.isRun) {
                     cacheBookJob?.cancel()
                     cacheBookJob = null
                     return@launch
                 }
                 CacheBook.cacheBookMap.forEach {
-                    while (CacheBook.onDownloadCount > threadCount) {
-                        delay(100)
+                    val cacheBookModel = it.value
+                    while (cacheBookModel.waitCount > 0) {
+                        if (CacheBook.onDownloadCount < threadCount) {
+                            cacheBookModel.download(this, upTocPool)
+                        } else {
+                            delay(100)
+                        }
                     }
-                    it.value.download(this, upTocPool)
                 }
             }
         }
@@ -213,6 +237,7 @@ class MainViewModel(application: Application) : BaseViewModel(application) {
             if (LocalConfig.needUpRssSources) {
                 DefaultData.importDefaultRssSources()
             }
+
         }
     }
 }

@@ -56,10 +56,20 @@
             android:key="userAgent"
             android:title="@string/user_agent" />
 
+        <io.legado.app.lib.prefs.SwitchPreference
+            android:defaultValue="false"
+            android:key="wakeLock"
+            android:title="@string/wake_lock"
+            android:summary="@string/wake_lock_summary" />
+
         <io.legado.app.lib.prefs.Preference
             android:key="defaultBookTreeUri"
             android:summary="@string/book_tree_uri_s"
             android:title="@string/book_tree_uri_t" />
+
+        <io.legado.app.lib.prefs.Preference
+            android:key="sourceEditMaxLine"
+            android:title="@string/source_edit_text_max_line" />
 
         <io.legado.app.lib.prefs.Preference
             android:key="checkSource"
@@ -75,11 +85,17 @@
             android:key="Cronet"
             android:summary="@string/pref_cronet_summary"
             android:title="Cronet" />
+
         <io.legado.app.lib.prefs.SwitchPreference
             android:defaultValue="false"
             android:key="antiAlias"
             android:summary="@string/pref_anti_alias_summary"
             android:title="@string/anti_alias" />
+
+        <io.legado.app.lib.prefs.Preference
+            android:key="bitmapCacheSize"
+            android:summary="@string/bitmap_cache_size_summary"
+            android:title="@string/bitmap_cache_size" />
 
         <io.legado.app.lib.prefs.Preference
             android:key="preDownloadNum"
@@ -105,6 +121,18 @@
             android:key="autoClearExpired"
             android:summary="@string/auto_clear_expired_summary"
             android:title="@string/auto_clear_expired" />
+
+        <io.legado.app.lib.prefs.SwitchPreference
+            android:defaultValue="true"
+            android:key="showAddToShelfAlert"
+            android:summary="@string/show_add_to_shelf_alert_summary"
+            android:title="@string/show_add_to_shelf_alert_title" />
+
+        <io.legado.app.lib.prefs.SwitchPreference
+            android:defaultValue="false"
+            android:key="ignoreAudioFocus"
+            android:summary="@string/ignore_audio_focus_summary"
+            android:title="@string/ignore_audio_focus_title" />
 
         <io.legado.app.lib.prefs.Preference
             android:key="webPort"

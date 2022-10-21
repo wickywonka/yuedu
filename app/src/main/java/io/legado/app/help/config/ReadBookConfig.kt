@@ -37,7 +37,6 @@ object ReadBookConfig {
             if (shareLayout) {
                 shareConfig = value
             }
-            upBg()
         }
 
     var bg: Drawable? = null
@@ -88,18 +87,16 @@ object ReadBookConfig {
         shareConfig = c ?: configList.getOrNull(5) ?: Config()
     }
 
-    fun upBg() {
-        val resources = appCtx.resources
-        val dm = resources.displayMetrics
-        val width = dm.widthPixels
-        val height = dm.heightPixels
-        bg = durConfig.curBgDrawable(width, height).apply {
-            if (this is BitmapDrawable) {
-                bgMeanColor = bitmap.getMeanColor()
-            } else if (this is ColorDrawable) {
-                bgMeanColor = color
-            }
+    fun upBg(width: Int, height: Int) {
+        val drawable = durConfig.curBgDrawable(width, height)
+        if (drawable is BitmapDrawable && drawable.bitmap != null) {
+            bgMeanColor = drawable.bitmap.getMeanColor()
+        } else if (drawable is ColorDrawable) {
+            bgMeanColor = drawable.color
         }
+        val tmp = bg
+        bg = drawable
+        (tmp as? BitmapDrawable)?.bitmap?.recycle()
     }
 
     fun save() {
@@ -123,7 +120,6 @@ object ReadBookConfig {
             if (styleSelect > 0) {
                 styleSelect -= 1
             }
-            upBg()
             return true
         }
         return false
@@ -214,6 +210,7 @@ object ReadBookConfig {
             config.paragraphSpacing = value
         }
 
+    //标题位置 0:居左 1:居中 2:隐藏
     var titleMode: Int
         get() = config.titleMode
         set(value) {
@@ -453,7 +450,7 @@ object ReadBookConfig {
         var letterSpacing: Float = 0.1f,//字间距
         var lineSpacingExtra: Int = 12,//行间距
         var paragraphSpacing: Int = 2,//段距
-        var titleMode: Int = 0,//标题居中
+        var titleMode: Int = 0,//标题位置 0:居左 1:居中 2:隐藏
         var titleSize: Int = 0,
         var titleTopSpacing: Int = 0,
         var titleBottomSpacing: Int = 0,
@@ -564,26 +561,23 @@ object ReadBookConfig {
         }
 
         fun curBgDrawable(width: Int, height: Int): Drawable {
+            if (width == 0 || height == 0) {
+                return ColorDrawable(appCtx.getCompatColor(R.color.background))
+            }
             var bgDrawable: Drawable? = null
             val resources = appCtx.resources
             try {
                 bgDrawable = when (curBgType()) {
                     0 -> ColorDrawable(Color.parseColor(curBgStr()))
                     1 -> {
-                        BitmapDrawable(
-                            resources,
-                            BitmapUtils.decodeAssetsBitmap(
-                                appCtx,
-                                "bg" + File.separator + curBgStr(),
-                                width,
-                                height
-                            )
-                        )
+                        val path = "bg" + File.separator + curBgStr()
+                        val bitmap = BitmapUtils.decodeAssetsBitmap(appCtx, path, width, height)
+                        BitmapDrawable(resources, bitmap?.resizeAndRecycle(width, height))
                     }
-                    else -> BitmapDrawable(
-                        resources,
-                        BitmapUtils.decodeBitmap(curBgStr(), width, height)
-                    )
+                    else -> {
+                        val bitmap = BitmapUtils.decodeBitmap(curBgStr(), width, height)
+                        BitmapDrawable(resources, bitmap?.resizeAndRecycle(width, height))
+                    }
                 }
             } catch (e: OutOfMemoryError) {
                 e.printOnDebug()

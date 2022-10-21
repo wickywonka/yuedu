@@ -33,28 +33,50 @@ java.getString(ruleStr: String?, mContent: Any? = null, isUrl: Boolean = false)
 java.getStringList(ruleStr: String?, mContent: Any? = null, isUrl: Boolean = false)
 ```
 * 设置解析内容
+
 ```
 java.setContent(content: Any?, baseUrl: String? = null):
 ```
+
 * 获取Element/Element列表
+
 > 如果要改变解析源代码，请先使用`java.setContent`
+
 ```
 java.getElement(ruleStr: String)
 java.getElements(ruleStr: String)
 ```
 
-### [js扩展类](https://github.com/gedoor/legado/blob/master/app/src/main/java/io/legado/app/help/JsExtensions.kt) 部分函数
+* 重新搜索书籍/重新获取目录url
+
+> 可以在刷新目录之前使用,有些书源书籍地址和目录url会变
+
+```
+java.reGetBook()
+java.refreshTocUrl()
+```
 * 变量存取
+
 ```
 java.get(key)
 java.put(key, value)
 ```
+
+### [js扩展类](https://github.com/gedoor/legado/blob/master/app/src/main/java/io/legado/app/help/JsExtensions.kt) 部分函数
+
 * 网络请求
+
 ```
 java.ajax(urlStr): String
 java.ajaxAll(urlList: Array<String>): Array<StrResponse?>
 //返回Response 方法body() code() message() header() raw() toString() 
-java.connect(urlStr): Response<String>
+java.connect(urlStr): StrResponse
+
+java.post(url: String, body: String, headerMap: Map<String, String>): Connection.Response
+
+java.get(url: String, headerMap: Map<String, String>): Connection.Response
+
+java.head(url: String, headerMap: Map<String, String>): Connection.Response
 
 * 使用webView访问网络
 * @param html 直接用webView载入的html, 如果html为空直接访问url
@@ -110,7 +132,17 @@ java.getZipStringContent(url: String, path: String)
 > flags参数可省略，默认Base64.NO_WRAP，查看[flags参数说明](https://blog.csdn.net/zcmain/article/details/97051870)
 ```
 java.base64Decode(str: String, flags: Int)
+java.base64DecodeToByteArray(str: String, flags: Int)
 java.base64Encode(str: String, flags: Int)
+```
+* Hex
+```
+/* HexString 解码为字节数组 */
+hexDecodeToByteArray(hex: String): ByteArray?
+/* hexString 解码为utf8String*/
+hexDecodeToString(hex: String): String?
+/* utf8 编码为hexString */
+hexEncodeToString(utf8: String): String?
 ```
 * 文件
 >  所有对于文件的读写删操作都是相对路径,只能操作阅读缓存/android/data/{package}/cache/内的文件
@@ -128,39 +160,46 @@ deleteFile(path: String)
 ```
 ****
 > [常见加密解密算法介绍](https://www.yijiyong.com/algorithm/encryption/01-intro.html)
-> [相关概念](https://blog.csdn.net/OrangeJack/article/details/82913804)  
-* AES
+
+> [相关概念](https://blog.csdn.net/OrangeJack/article/details/82913804)
+
+> [Android支持的transformation](https://developer.android.google.cn/reference/kotlin/javax/crypto/Cipher?hl=en)
+
+> 其他加密方式 可在js中[调用](https://m.jb51.net/article/92138.htm)[hutool-crypto](https://www.hutool.cn/docs/#/)
+
+* 对称加密AES/DES/TripleDES
+> AES transformation默认实现AES/ECB/PKCS5Padding  
+> DES transformation默认实现DES/ECB/PKCS5Padding  
+> TripleDES tansformation默认实现DESede/ECB/PKCS5Padding  
+> 内部实现为cn.hutool.crypto 解密加密接口支持ByteArray|Base64String|HexString|InputStream  
+> 输入参数key iv 支持ByteArray|Utf8String  
+> 如果key iv 为Hex Base64,且需要解码为ByteArray，自行调用java.base64DecodeToByteArray java.hexDecodeToByteArray
 ```
-* @param data 传入的原始数据
-* @param key AES加密的key
-* @param transformation AES加密的方式 例如AES/ECB/PKCS5Padding
-* @param iv ECB模式的偏移向量
-java.aesDecodeToString(str: String, key: String, transformation: String, iv: String)
+//解密为ByteArray 字符串
+java.createSymmetricCrypto(transformation, key, iv).decrypt(data)
 
-java.aesBase64DecodeToString(str: String, key: String, transformation: String, iv: String)
+java.createSymmetricCrypto(transformation, key, iv).decryptStr(data)
 
-java.aesEncodeToString(str: String, key: String, transformation: String, iv: String)
+//加密为ByteArray Base64字符 HEX字符
+java.createSymmetricCrypto(transformation, key, iv).encrypt(data)
 
-java.aesEncodeToBase64String(str: String, key: String, transformation: String, iv: String)
-```
-* 3DES
-```
-* @param data 被加密的字符串
-* @param key 密钥
-* @param mode 模式 ECB/CBC/CFB/OFB/CTR
-* @param padding 补码方式 NoPadding/PKCS5Padding/
-* @param iv 加盐
-java.tripleDESEncodeBase64Str(data: String,key: String,mode: String,padding: String,iv: String): String?
+java.createSymmetricCrypto(transformation, key, iv).encryptBase64(data)
 
-java.tripleDESDecodeStr(data: String,key: String,mode: String,padding: String,iv: String): String?
+java.createSymmetricCrypto(transformation, key, iv).encryptHex(data)
 ```
 * 摘要
+> MD5 SHA-1 SHA-224 SHA-256 SHA-384 SHA-512
 ```
-* @param data 被摘要数据
-* @param algorithm 签名算法 MD5/SHA1/SHA256/SHA512
-java.digestHex(data: String,algorithm: String,): String?
+java.digestHex(data: String, algorithm: String,): String?
 
-java.digestBase64Str(data: String,algorithm: String,): String?
+java.digestBase64Str(data: String, algorithm: String,): String?
+```
+* HMac(部分算法暂不支持)
+> DESMAC DESMAC/CFB8 DESedeMAC DESedeMAC/CFB8 DESedeMAC64 DESwithISO9797 HmacMD5 HmacSHA* ISO9797ALG3MAC PBEwithSHA*
+```
+java.HMacHex(data: String, algorithm: String, key: String): String
+
+java.HMacBase64(data: String, algorithm: String, key: String): String
 ```
 * md5
 ```

@@ -10,6 +10,7 @@ import android.view.MenuInflater
 import android.view.MenuItem
 import android.view.View
 import android.widget.SeekBar
+import androidx.core.view.MenuProvider
 import androidx.preference.Preference
 import io.legado.app.R
 import io.legado.app.base.AppContextWrapper
@@ -29,12 +30,14 @@ import io.legado.app.lib.theme.primaryColor
 import io.legado.app.ui.widget.number.NumberPickerDialog
 import io.legado.app.ui.widget.seekbar.SeekBarChangeListener
 import io.legado.app.utils.*
+import splitties.init.appCtx
 import java.io.FileOutputStream
 
 
 @Suppress("SameParameterValue")
 class ThemeConfigFragment : PreferenceFragment(),
-    SharedPreferences.OnSharedPreferenceChangeListener {
+    SharedPreferences.OnSharedPreferenceChangeListener,
+    MenuProvider {
 
     private val requestCodeBgLight = 121
     private val requestCodeBgDark = 122
@@ -89,7 +92,7 @@ class ThemeConfigFragment : PreferenceFragment(),
         super.onViewCreated(view, savedInstanceState)
         activity?.setTitle(R.string.theme_setting)
         listView.setEdgeEffectColor(primaryColor)
-        setHasOptionsMenu(true)
+        activity?.addMenuProvider(this, viewLifecycleOwner)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -102,19 +105,20 @@ class ThemeConfigFragment : PreferenceFragment(),
         preferenceManager.sharedPreferences?.unregisterOnSharedPreferenceChangeListener(this)
     }
 
-    override fun onCreateOptionsMenu(menu: Menu, inflater: MenuInflater) {
-        super.onCreateOptionsMenu(menu, inflater)
-        inflater.inflate(R.menu.theme_config, menu)
+    override fun onCreateMenu(menu: Menu, menuInflater: MenuInflater) {
+        menuInflater.inflate(R.menu.theme_config, menu)
+        menu.applyTint(requireContext())
     }
 
-    override fun onOptionsItemSelected(item: MenuItem): Boolean {
-        when (item.itemId) {
+    override fun onMenuItemSelected(menuItem: MenuItem): Boolean {
+        when (menuItem.itemId) {
             R.id.menu_theme_mode -> {
                 AppConfig.isNightTheme = !AppConfig.isNightTheme
                 ThemeConfig.applyDayNight(requireContext())
+                return true
             }
         }
-        return super.onOptionsItemSelected(item)
+        return false
     }
 
     override fun onSharedPreferenceChanged(sharedPreferences: SharedPreferences?, key: String?) {
@@ -300,13 +304,21 @@ class ThemeConfigFragment : PreferenceFragment(),
 
     private fun setBgFromUri(uri: Uri, preferenceKey: String, success: () -> Unit) {
         readUri(uri) { fileDoc, inputStream ->
-            var file = requireContext().externalFiles
-            file = FileUtils.createFileIfNotExist(file, preferenceKey, fileDoc.name)
-            FileOutputStream(file).use {
-                inputStream.copyTo(it)
+            kotlin.runCatching {
+                var file = requireContext().externalFiles
+                val suffix = fileDoc.name.substringAfterLast(".")
+                val fileName = uri.inputStream(requireContext()).getOrThrow().use {
+                    MD5Utils.md5Encode(it) + ".$suffix"
+                }
+                file = FileUtils.createFileIfNotExist(file, preferenceKey, fileName)
+                FileOutputStream(file).use {
+                    inputStream.copyTo(it)
+                }
+                putPrefString(preferenceKey, file.absolutePath)
+                success()
+            }.onFailure {
+                appCtx.toastOnUi(it.localizedMessage)
             }
-            putPrefString(preferenceKey, file.absolutePath)
-            success()
         }
     }
 

@@ -14,7 +14,6 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import io.legado.app.R
 import io.legado.app.base.BaseDialogFragment
-import io.legado.app.constant.AppPattern
 import io.legado.app.constant.EventBus
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
@@ -22,7 +21,7 @@ import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.SearchBook
 import io.legado.app.databinding.DialogChapterChangeSourceBinding
-import io.legado.app.help.BookHelp
+import io.legado.app.help.book.BookHelp
 import io.legado.app.help.config.AppConfig
 import io.legado.app.lib.dialogs.alert
 import io.legado.app.lib.theme.elevation
@@ -79,8 +78,8 @@ class ChangeChapterSourceDialog() : BaseDialogFragment(R.layout.dialog_chapter_c
                 launch {
                     alert("搜索结果为空") {
                         setMessage("${searchGroup}分组搜索结果为空,是否切换到全部分组")
-                        cancelButton()
-                        okButton {
+                        noButton()
+                        yesButton {
                             AppConfig.searchGroup = ""
                             viewModel.startSearch()
                         }
@@ -210,11 +209,9 @@ class ChangeChapterSourceDialog() : BaseDialogFragment(R.layout.dialog_chapter_c
             }
         }
         launch {
-            appDb.bookSourceDao.flowGroupEnabled().conflate().collect {
+            appDb.bookSourceDao.flowEnabledGroups().conflate().collect {
                 groups.clear()
-                it.map { group ->
-                    groups.addAll(group.splitNotBlank(AppPattern.splitGroupRegex))
-                }
+                groups.addAll(it)
                 upGroupMenu()
             }
         }
@@ -312,6 +309,14 @@ class ChangeChapterSourceDialog() : BaseDialogFragment(R.layout.dialog_chapter_c
                 callBack?.changeTo(source, book, toc)
             }
         }
+    }
+
+    override fun setBookScore(searchBook: SearchBook, score: Int) {
+        viewModel.setBookScore(searchBook, score)
+    }
+
+    override fun getBookScore(searchBook: SearchBook): Int {
+        return viewModel.getBookScore(searchBook)
     }
 
     override fun clickChapter(bookChapter: BookChapter, nextChapterUrl: String?) {

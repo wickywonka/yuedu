@@ -123,7 +123,11 @@ abstract class BaseReadBookActivity :
         if (toolBarHide) {
             setLightStatusBar(ReadBookConfig.durConfig.curStatusIconDark())
         } else {
-            val statusBarColor = ThemeStore.statusBarColor(this, AppConfig.isTransparentStatusBar)
+            val statusBarColor = if (AppConfig.readBarStyleFollowPage && ReadBookConfig.durConfig.curBgType() == 0) {
+                ReadBookConfig.bgMeanColor
+            } else {
+                ThemeStore.statusBarColor(this, AppConfig.isTransparentStatusBar)
+            }
             setLightStatusBar(ColorUtils.isColorLight(statusBarColor))
         }
     }
@@ -198,6 +202,8 @@ abstract class BaseReadBookActivity :
      * 保持亮屏
      */
     fun keepScreenOn(on: Boolean) {
+        val isScreenOn = (window.attributes.flags and WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) != 0
+        if (on == isScreenOn) return
         if (on) {
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         } else {
@@ -229,8 +235,12 @@ abstract class BaseReadBookActivity :
                 customView { alertBinding.root }
                 yesButton {
                     alertBinding.run {
-                        val start = editStart.text?.toString()?.toInt() ?: 0
-                        val end = editEnd.text?.toString()?.toInt() ?: book.totalChapterNum
+                        val start = editStart.text!!.toString().let {
+                            if (it.isEmpty()) 0 else it.toInt()
+                        }
+                        val end = editEnd.text!!.toString().let {
+                            if (it.isEmpty()) book.totalChapterNum else it.toInt()
+                        }
                         CacheBook.start(this@BaseReadBookActivity, book, start - 1, end - 1)
                     }
                 }

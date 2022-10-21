@@ -2,10 +2,11 @@ package io.legado.app.model.localBook
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.net.Uri
 import android.text.TextUtils
+import io.legado.app.constant.AppLog
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
+import io.legado.app.help.book.BookHelp
 import io.legado.app.utils.*
 import me.ag2s.epublib.domain.EpubBook
 import me.ag2s.epublib.domain.Resource
@@ -15,13 +16,12 @@ import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.jsoup.select.Elements
 import splitties.init.appCtx
-
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
+import java.net.URLDecoder
 import java.nio.charset.Charset
-import java.util.zip.ZipFile
 
 class EpubFile(var book: Book) {
 
@@ -33,7 +33,7 @@ class EpubFile(var book: Book) {
             if (eFile == null || eFile?.book?.bookUrl != book.bookUrl) {
                 eFile = EpubFile(book)
                 //对于Epub文件默认不启用替换
-                book.setUseReplaceRule(false)
+                //io.legado.app.data.entities.Book getUseReplaceRule
                 return eFile!!
             }
             eFile?.book = book
@@ -92,55 +92,77 @@ class EpubFile(var book: Book) {
                         cover.compress(Bitmap.CompressFormat.JPEG, 90, out)
                         out.flush()
                         out.close()
-                    }
+                    } ?: AppLog.putDebug("Epub: 封面获取为空. path: ${book.bookUrl}")
                 }
             }
         } catch (e: Exception) {
+            AppLog.put("加载书籍封面失败\n${e.localizedMessage}", e)
             e.printOnDebug()
         }
     }
 
-    /*重写epub文件解析代码，直接读出压缩包文件生成Resources给epublib，这样的好处是可以逐一修改某些文件的格式错误*/
+    /**
+     * 重写epub文件解析代码，直接读出压缩包文件生成Resources给epublib，这样的好处是可以逐一修改某些文件的格式错误
+     */
     private fun readEpub(): EpubBook? {
-        try {
-            val uri = Uri.parse(book.bookUrl)
-            return if (uri.isContentScheme()) {
-                //高版本的手机内存一般足够大，直接加载到内存中最快
-                EpubReader().readEpub(LocalBook.getBookInputStream(book), "utf-8")
-            } else {
-                //低版本的使用懒加载
-                EpubReader().readEpubLazy(ZipFile(uri.path), "utf-8")
-
-            }
-
-
-        } catch (e: Exception) {
-            e.printOnDebug()
-        }
-        return null
+        return kotlin.runCatching {
+            //ContentScheme拷贝到私有文件夹采用懒加载防止OOM
+            val zipFile = BookHelp.getEpubFile(book)
+            EpubReader().readEpubLazy(zipFile, "utf-8")
+        }.onFailure {
+            AppLog.put("读取Epub文件失败\n${it.localizedMessage}", it)
+            it.printOnDebug()
+        }.getOrNull()
     }
 
     private fun getContent(chapter: BookChapter): String? {
+        /**
+         * <image width="1038" height="670" xlink:href="..."/>
+         * ...titlepage.xhtml
+         */
+        if (chapter.url.contains("titlepage.xhtml") ||
+            chapter.url.contains("cover.xhtml")
+        ) {
+            return "<img src=\"cover.jpeg\" />"
+        }
         /*获取当前章节文本*/
         epubBook?.let { epubBook ->
             val nextUrl = chapter.getVariable("nextUrl")
             val startFragmentId = chapter.startFragmentId
             val endFragmentId = chapter.endFragmentId
             val elements = Elements()
-            var isChapter = false
+            var hasMoreResources = false
+            val includeNextChapterResource = !endFragmentId.isNullOrBlank()
             /*一些书籍依靠href索引的resource会包含多个章节，需要依靠fragmentId来截取到当前章节的内容*/
             /*注:这里较大增加了内容加载的时间，所以首次获取内容后可存储到本地cache，减少重复加载*/
             for (res in epubBook.contents) {
-                if (chapter.url.substringBeforeLast("#") == res.href) {
-                    elements.add(getBody(res, startFragmentId, endFragmentId))
-                    isChapter = true
-                } else if (isChapter) {
-                    if (nextUrl.isNullOrBlank() || res.href == nextUrl.substringBeforeLast("#")) {
+                val isFirstResource = chapter.url.substringBeforeLast("#") == res.href
+                val isNextChapterResource = res.href == nextUrl?.substringBeforeLast("#")
+                if (isFirstResource) {
+                    // add first resource to elements
+                    elements.add(
+                        /* pass endFragmentId if only has one resource */
+                        getBody(res, startFragmentId, endFragmentId)
+                    )
+                    // check current resource 
+                    if (isNextChapterResource) {
+                        /* FragmentId should not be same in same resource */
+                        if (!endFragmentId.isNullOrBlank() && endFragmentId == startFragmentId)
+                            AppLog.putDebug("Epub: Resource (${res.href}) has same FragmentId, check the file: ${book.bookUrl}")
                         break
                     }
-                    elements.add(getBody(res, startFragmentId, endFragmentId))
+                    hasMoreResources = true
+                } else if (hasMoreResources) {
+                    if (isNextChapterResource) {
+                        if (includeNextChapterResource) elements.add(getBody(res, null/* FragmentId may be same in different resources, pass null */, endFragmentId))
+                        break
+                    }
+                    // rest resource should not have fragmentId, pass null 
+                    elements.add(getBody(res, null, null))
                 }
             }
+            //title标签中的内容不需要显示在正文中，去除
+            elements.select("title").remove()
             var html = elements.outerHtml()
             val tag = Book.rubyTag
             if (book.getDelTag(tag)) {
@@ -157,7 +179,10 @@ class EpubFile(var book: Book) {
             body.getElementById(startFragmentId)?.previousElementSiblings()?.remove()
         }
         if (!endFragmentId.isNullOrBlank() && endFragmentId != startFragmentId) {
-            body.getElementById(endFragmentId)?.nextElementSiblings()?.remove()
+            body.getElementById(endFragmentId)?.run {
+                nextElementSiblings().remove()
+                remove()
+            }
         }
         /*选择去除正文中的H标签，部分书籍标题与阅读标题重复待优化*/
         val tag = Book.hTag
@@ -178,7 +203,8 @@ class EpubFile(var book: Book) {
     }
 
     private fun getImage(href: String): InputStream? {
-        val abHref = href.replace("../", "")
+        if (href == "cover.jpeg") return epubBook?.coverImage?.inputStream
+        val abHref = URLDecoder.decode(href.replace("../", ""), "UTF-8")
         return epubBook?.resources?.getByHref(abHref)?.inputStream
     }
 
@@ -209,6 +235,7 @@ class EpubFile(var book: Book) {
         epubBook?.let { eBook ->
             val refs = eBook.tableOfContents.tocReferences
             if (refs == null || refs.isEmpty()) {
+                AppLog.putDebug("Epub: NCX file parse error, check the file: ${book.bookUrl}")
                 val spineReferences = eBook.spine.spineReferences
                 var i = 0
                 val size = spineReferences.size
@@ -236,6 +263,7 @@ class EpubFile(var book: Book) {
                     } else {
                         chapter.title = title
                     }
+                    chapterList.lastOrNull()?.putVariable("nextUrl", chapter.url)
                     chapterList.add(chapter)
                     i++
                 }
@@ -247,8 +275,6 @@ class EpubFile(var book: Book) {
                 }
             }
         }
-        book.latestChapterTitle = chapterList.lastOrNull()?.title
-        book.totalChapterNum = chapterList.size
         return chapterList
     }
 
@@ -266,8 +292,12 @@ class EpubFile(var book: Book) {
         while (i < contents.size) {
             val content = contents[i]
             if (!content.mediaType.toString().contains("htm")) continue
-            /*检索到第一章href停止*/
-            if (refs[0].completeHref == content.href) break
+            /**
+             * 检索到第一章href停止
+             * completeHref可能有fragment(#id) 必须去除
+             * fix https://github.com/gedoor/legado/issues/1932
+             */
+            if (refs[0].completeHref.substringBeforeLast("#") == content.href) break
             val chapter = BookChapter()
             var title = content.title
             if (TextUtils.isEmpty(title)) {
@@ -313,6 +343,7 @@ class EpubFile(var book: Book) {
                 durIndex++
             }
             if (ref.children != null && ref.children.isNotEmpty()) {
+                chapterList.lastOrNull()?.isVolume = true
                 parseMenu(chapterList, ref.children, level + 1)
             }
         }

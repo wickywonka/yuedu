@@ -1,27 +1,27 @@
 package io.legado.app.model
 
 import io.legado.app.constant.AppLog
-import io.legado.app.constant.BookType
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.*
-import io.legado.app.help.BookHelp
-import io.legado.app.help.ContentProcessor
+import io.legado.app.help.AppWebDav
+import io.legado.app.help.book.BookHelp
+import io.legado.app.help.book.ContentProcessor
+import io.legado.app.help.book.isLocal
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.ReadBookConfig
 import io.legado.app.help.coroutine.Coroutine
-import io.legado.app.help.storage.AppWebDav
 import io.legado.app.model.webBook.WebBook
 import io.legado.app.service.BaseReadAloudService
 import io.legado.app.ui.book.read.page.entities.TextChapter
 import io.legado.app.ui.book.read.page.provider.ChapterProvider
-import io.legado.app.ui.book.read.page.provider.ImageProvider
-import io.legado.app.utils.msg
+import io.legado.app.utils.stackTraceStr
 import io.legado.app.utils.toastOnUi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers.IO
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.delay
 import splitties.init.appCtx
+import kotlin.math.min
 
 
 @Suppress("MemberVisibilityCanBePrivate")
@@ -42,6 +42,25 @@ object ReadBook : CoroutineScope by MainScope() {
     private val loadingChapters = arrayListOf<Int>()
     private val readRecord = ReadRecord()
     var readStartTime: Long = System.currentTimeMillis()
+    /* 跳转历史记录 */
+    var bookProgressHistory: List<BookProgress>? = null
+    /* 跳转进度前进度记录 */
+    var lastBookPress: BookProgress? = null
+    /* web端阅读进度记录 */
+    var webBookProgress: BookProgress? = null
+
+    //暂时保存跳转前进度
+    fun saveCurrentBookProcess() {
+        if (lastBookPress != null) return //避免进度条连续跳转不能覆盖最初的进度记录
+        lastBookPress = book?.let { BookProgress(it) }
+    }
+    //恢复跳转前进度
+    fun restoreLastBookProcess() {
+        lastBookPress?.let {
+            setProgress(it)
+            lastBookPress = null
+        }
+    }
 
     fun resetData(book: Book) {
         ReadBook.book = book
@@ -50,11 +69,13 @@ object ReadBook : CoroutineScope by MainScope() {
         chapterSize = appDb.bookChapterDao.getChapterCount(book.bookUrl)
         durChapterIndex = book.durChapterIndex
         durChapterPos = book.durChapterPos
-        isLocalBook = book.origin == BookType.local
+        isLocalBook = book.isLocal
         clearTextChapter()
         callBack?.upMenuView()
         callBack?.upPageAnim()
         upWebBook(book)
+        lastBookPress = null
+        webBookProgress = null
         synchronized(this) {
             loadingChapters.clear()
         }
@@ -73,7 +94,7 @@ object ReadBook : CoroutineScope by MainScope() {
     }
 
     fun upWebBook(book: Book) {
-        if (book.origin == BookType.local) {
+        if (book.isLocal) {
             bookSource = null
         } else {
             appDb.bookSourceDao.getBookSource(book.origin)?.let {
@@ -107,7 +128,9 @@ object ReadBook : CoroutineScope by MainScope() {
 
     fun uploadProgress() {
         book?.let {
-            AppWebDav.uploadBookProgress(it)
+            Coroutine.async {
+                AppWebDav.uploadBookProgress(it)
+            }
         }
     }
 
@@ -115,6 +138,7 @@ object ReadBook : CoroutineScope by MainScope() {
         Coroutine.async {
             readRecord.readTime = readRecord.readTime + System.currentTimeMillis() - readStartTime
             readStartTime = System.currentTimeMillis()
+            readRecord.lastRead = System.currentTimeMillis()
             if (AppConfig.enableReadRecord) {
                 appDb.readRecordDao.insert(readRecord)
             }
@@ -128,10 +152,18 @@ object ReadBook : CoroutineScope by MainScope() {
         }
     }
 
-    fun moveToNextPage() {
-        durChapterPos = curTextChapter?.getNextPageLength(durChapterPos) ?: durChapterPos
-        callBack?.upContent()
-        saveRead()
+    fun moveToNextPage(): Boolean {
+        var hasNextPage = false
+        curTextChapter?.let {
+            val nextPagePos = it.getNextPageLength(durChapterPos)
+            if (nextPagePos >= 0) {
+                hasNextPage = true
+                durChapterPos = nextPagePos
+                callBack?.upContent()
+                saveRead()
+            }
+        }
+        return hasNextPage
     }
 
     fun moveToNextChapter(upContent: Boolean): Boolean {
@@ -202,7 +234,7 @@ object ReadBook : CoroutineScope by MainScope() {
     private fun curPageChanged() {
         callBack?.pageChanged()
         if (BaseReadAloudService.isRun) {
-            readAloud(!BaseReadAloudService.pause)
+            ReadAloud.playByEventBus(!BaseReadAloudService.pause)
         }
         upReadTime()
         preDownload()
@@ -279,7 +311,7 @@ object ReadBook : CoroutineScope by MainScope() {
             return
         }
         book?.let { book ->
-            if (book.isLocalBook()) return
+            if (book.isLocal) return
             if (addLoading(index)) {
                 Coroutine.async {
                     appDb.bookChapterDao.getChapter(book.bookUrl, index)?.let { chapter ->
@@ -307,8 +339,9 @@ object ReadBook : CoroutineScope by MainScope() {
         if (book != null && bookSource != null) {
             CacheBook.getOrCreate(bookSource, book).download(scope, chapter)
         } else if (book != null) {
+            val msg = if (book.isLocal) "无内容" else "没有书源"
             contentLoadFinish(
-                book, chapter, "没有书源", resetPageOffset = resetPageOffset
+                book, chapter, "加载正文失败\n$msg", resetPageOffset = resetPageOffset
             ) {
                 success?.invoke()
             }
@@ -375,7 +408,7 @@ object ReadBook : CoroutineScope by MainScope() {
             }
         }.onError {
             AppLog.put("ChapterProvider ERROR", it)
-            appCtx.toastOnUi("ChapterProvider ERROR:\n${it.msg}")
+            appCtx.toastOnUi("ChapterProvider ERROR:\n${it.stackTraceStr}")
         }.onSuccess {
             success?.invoke()
         }
@@ -438,7 +471,7 @@ object ReadBook : CoroutineScope by MainScope() {
                 delay(1000)
                 download(i)
             }
-            val minChapterIndex = durChapterIndex - 5
+            val minChapterIndex = durChapterIndex - min(5, AppConfig.preDownloadNum)
             for (i in durChapterIndex.minus(2) downTo minChapterIndex) {
                 delay(1000)
                 download(i)

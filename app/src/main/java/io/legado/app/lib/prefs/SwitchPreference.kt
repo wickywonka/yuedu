@@ -24,13 +24,9 @@ class SwitchPreference(context: Context, attrs: AttributeSet) :
 
     override fun onBindViewHolder(holder: PreferenceViewHolder) {
         val v = Preference.bindView<SwitchCompat>(
-            context,
-            holder,
-            icon,
-            title,
-            summary,
+            context, holder, icon, title, summary,
             widgetLayoutResource,
-            R.id.switchWidget,
+            androidx.preference.R.id.switchWidget,
             isBottomBackground = isBottomBackground
         )
         if (v is SwitchCompat && !v.isInEditMode) {

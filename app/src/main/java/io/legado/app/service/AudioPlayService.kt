@@ -9,6 +9,7 @@ import android.graphics.BitmapFactory
 import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
 import androidx.core.app.NotificationCompat
@@ -24,6 +25,7 @@ import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.help.MediaHelp
+import io.legado.app.help.config.AppConfig
 import io.legado.app.help.exoplayer.ExoPlayerHelper
 import io.legado.app.help.glide.ImageLoader
 import io.legado.app.model.AudioPlay
@@ -35,6 +37,7 @@ import io.legado.app.utils.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.Dispatchers.Main
 import splitties.systemservices.audioManager
+import splitties.systemservices.powerManager
 
 /**
  * 音频播放服务
@@ -44,18 +47,27 @@ class AudioPlayService : BaseService(),
     Player.Listener {
 
     companion object {
+        @JvmStatic
         var isRun = false
             private set
+
+        @JvmStatic
         var pause = true
             private set
+
+        @JvmStatic
         var timeMinute: Int = 0
             private set
+
         var url: String = ""
             private set
     }
 
+    private val wakeLock by lazy {
+        powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "legado:webService")
+    }
     private val mFocusRequest: AudioFocusRequestCompat by lazy {
-        MediaHelp.getFocusRequest(this)
+        MediaHelp.buildAudioFocusRequestCompat(this)
     }
     private val exoPlayer: ExoPlayer by lazy {
         ExoPlayer.Builder(this).setLoadControl(
@@ -69,14 +81,16 @@ class AudioPlayService : BaseService(),
     }
     private var mediaSessionCompat: MediaSessionCompat? = null
     private var broadcastReceiver: BroadcastReceiver? = null
-    private var audioFocusLossTransient = false
+    private var needResumeOnAudioFocusGain = false
     private var position = AudioPlay.book?.durChapterPos ?: 0
     private var dsJob: Job? = null
     private var upPlayProgressJob: Job? = null
     private var playSpeed: Float = 1f
 
+    @SuppressLint("WakelockTimeout")
     override fun onCreate() {
         super.onCreate()
+        wakeLock.acquire()
         isRun = true
         upNotification()
         exoPlayer.addListener(this)
@@ -94,7 +108,8 @@ class AudioPlayService : BaseService(),
                     position = AudioPlay.book?.durChapterPos ?: 0
                     loadContent()
                 }
-                IntentAction.pause -> pause(true)
+
+                IntentAction.pause -> pause()
                 IntentAction.resume -> resume()
                 IntentAction.prev -> AudioPlay.prev(this)
                 IntentAction.next -> AudioPlay.next(this)
@@ -112,7 +127,9 @@ class AudioPlayService : BaseService(),
 
     override fun onDestroy() {
         super.onDestroy()
+        wakeLock.release()
         isRun = false
+        abandonFocus()
         exoPlayer.release()
         mediaSessionCompat?.release()
         unregisterReceiver(broadcastReceiver)
@@ -158,9 +175,12 @@ class AudioPlayService : BaseService(),
     /**
      * 暂停播放
      */
-    private fun pause(pause: Boolean) {
+    private fun pause(abandonFocus: Boolean = true) {
         try {
-            AudioPlayService.pause = pause
+            pause = true
+            if (abandonFocus) {
+                abandonFocus()
+            }
             upPlayProgressJob?.cancel()
             position = exoPlayer.currentPosition.toInt()
             if (exoPlayer.isPlaying) exoPlayer.pause()
@@ -424,7 +444,7 @@ class AudioPlayService : BaseService(),
         broadcastReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
                 if (AudioManager.ACTION_AUDIO_BECOMING_NOISY == intent.action) {
-                    pause(true)
+                    pause()
                 }
             }
         }
@@ -436,25 +456,34 @@ class AudioPlayService : BaseService(),
      * 音频焦点变化
      */
     override fun onAudioFocusChange(focusChange: Int) {
+        if (AppConfig.ignoreAudioFocus) {
+            AppLog.put("忽略音频焦点处理(有声)")
+            return
+        }
         when (focusChange) {
             AudioManager.AUDIOFOCUS_GAIN -> {
-                // 重新获得焦点,  可做恢复播放，恢复后台音量的操作
-                audioFocusLossTransient = false
-                if (!pause) resume()
-            }
-            AudioManager.AUDIOFOCUS_LOSS -> {
-                // 永久丢失焦点除非重新主动获取，这种情况是被其他播放器抢去了焦点，  为避免与其他播放器混音，可将音乐暂停
-                if (audioFocusLossTransient) {
-                    pause(true)
+                if (needResumeOnAudioFocusGain) {
+                    AppLog.put("音频焦点获得,继续播放")
+                    resume()
+                } else {
+                    AppLog.put("音频焦点获得")
                 }
             }
+            AudioManager.AUDIOFOCUS_LOSS -> {
+                AppLog.put("音频焦点丢失,暂停播放")
+                pause()
+            }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
-                // 暂时丢失焦点，这种情况是被其他应用申请了短暂的焦点，可压低后台音量
-                audioFocusLossTransient = true
-                if (!pause) pause(false)
+                AppLog.put("音频焦点暂时丢失并会很快再次获得,暂停播放")
+                needResumeOnAudioFocusGain = true
+                if (!pause) {
+                    needResumeOnAudioFocusGain = true
+                    pause(false)
+                }
             }
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
                 // 短暂丢失焦点，这种情况是被其他应用申请了短暂的焦点希望其他声音能压低音量（或者关闭声音）凸显这个声音（比如短信提示音），
+                AppLog.put("音频焦点短暂丢失,不做处理")
             }
         }
     }
@@ -532,10 +561,22 @@ class AudioPlayService : BaseService(),
     }
 
     /**
+     * 请求音频焦点
      * @return 音频焦点
      */
     private fun requestFocus(): Boolean {
-        return MediaHelp.requestFocus(audioManager, mFocusRequest)
+        if (AppConfig.ignoreAudioFocus) {
+            return true
+        }
+        return MediaHelp.requestFocus(mFocusRequest)
+    }
+
+    /**
+     * 放弃音频焦点
+     */
+    private fun abandonFocus() {
+        @Suppress("DEPRECATION")
+        audioManager.abandonAudioFocus(this)
     }
 
 }

@@ -21,11 +21,11 @@ import io.legado.app.constant.AppConst.appInfo
 import io.legado.app.constant.EventBus
 import io.legado.app.constant.PreferKey
 import io.legado.app.databinding.ActivityMainBinding
-import io.legado.app.help.BookHelp
+import io.legado.app.help.AppWebDav
+import io.legado.app.help.book.BookHelp
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.config.LocalConfig
 import io.legado.app.help.coroutine.Coroutine
-import io.legado.app.help.storage.AppWebDav
 import io.legado.app.help.storage.Backup
 import io.legado.app.lib.dialogs.alert
 import io.legado.app.lib.theme.elevation
@@ -46,6 +46,8 @@ import io.legado.app.utils.viewbindingdelegate.viewBinding
 import kotlinx.coroutines.Dispatchers.IO
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.resume
+import kotlin.coroutines.suspendCoroutine
 
 /**
  * 主界面
@@ -85,27 +87,22 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
 
     override fun onPostCreate(savedInstanceState: Bundle?) {
         super.onPostCreate(savedInstanceState)
-        upVersion()
-        //自动更新书籍
-        if (AppConfig.autoRefreshBook) {
-            binding.viewPagerMain.postDelayed(1000) {
-                viewModel.upAllBookToc()
-            }
-        }
-        binding.viewPagerMain.postDelayed(3000) {
-            viewModel.postLoad()
-        }
         launch {
-            val lastBackupFile = withContext(IO) { AppWebDav.lastBackUp().getOrNull() }
-                ?: return@launch
-            if (lastBackupFile.lastModify - LocalConfig.lastBackup > DateUtils.MINUTE_IN_MILLIS) {
-                alert("恢复", "webDav书源比本地新,是否恢复") {
-                    cancelButton()
-                    okButton {
-                        viewModel.restoreWebDav(lastBackupFile.displayName)
-                    }
+            //隐私协议
+            if (!privacyPolicy()) return@launch
+            //版本更新
+            upVersion()
+            //自动更新书籍
+            val isAutoRefreshedBook = savedInstanceState?.getBoolean("isAutoRefreshedBook") ?: false
+            if (AppConfig.autoRefreshBook && !isAutoRefreshedBook) {
+                binding.viewPagerMain.postDelayed(1000) {
+                    viewModel.upAllBookToc()
                 }
             }
+            binding.viewPagerMain.postDelayed(3000) {
+                viewModel.postLoad()
+            }
+            syncAlert()
         }
     }
 
@@ -142,17 +139,74 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
         }
     }
 
-    private fun upVersion() {
-        if (LocalConfig.versionCode != appInfo.versionCode) {
-            LocalConfig.versionCode = appInfo.versionCode
-            if (LocalConfig.isFirstOpenApp) {
-                val text = String(assets.open("help/appHelp.md").readBytes())
-                showDialogFragment(TextDialog(text, TextDialog.Mode.MD))
-            } else if (!BuildConfig.DEBUG) {
-                val log = String(assets.open("updateLog.md").readBytes())
-                showDialogFragment(TextDialog(log, TextDialog.Mode.MD))
+    /**
+     * 用户隐私与协议
+     */
+    private suspend fun privacyPolicy(): Boolean = suspendCoroutine { block ->
+        if (LocalConfig.privacyPolicyOk) {
+            block.resume(true)
+            return@suspendCoroutine
+        }
+        val privacyPolicy = String(assets.open("privacyPolicy.md").readBytes())
+        alert("用户隐私与协议", privacyPolicy) {
+            noButton {
+                finish()
+                block.resume(false)
             }
-            viewModel.upVersion()
+            yesButton {
+                LocalConfig.privacyPolicyOk = true
+                block.resume(true)
+            }
+            onCancelled {
+                finish()
+                block.resume(false)
+            }
+        }
+    }
+
+    /**
+     * 版本更新日志
+     */
+    private suspend fun upVersion() = suspendCoroutine { block ->
+        if (LocalConfig.versionCode == appInfo.versionCode) {
+            block.resume(Unit)
+            return@suspendCoroutine
+        }
+        LocalConfig.versionCode = appInfo.versionCode
+        viewModel.upVersion()
+        if (LocalConfig.isFirstOpenApp) {
+            val help = String(assets.open("help/appHelp.md").readBytes())
+            val dialog = TextDialog(help, TextDialog.Mode.MD)
+            dialog.setOnDismissListener {
+                block.resume(Unit)
+            }
+            showDialogFragment(dialog)
+        } else if (!BuildConfig.DEBUG) {
+            val log = String(assets.open("updateLog.md").readBytes())
+            val dialog = TextDialog(log, TextDialog.Mode.MD)
+            dialog.setOnDismissListener {
+                block.resume(Unit)
+            }
+            showDialogFragment(dialog)
+        } else {
+            block.resume(Unit)
+        }
+    }
+
+    /**
+     * 同步提示
+     */
+    private fun syncAlert() = launch {
+        val lastBackupFile = withContext(IO) { AppWebDav.lastBackUp().getOrNull() }
+            ?: return@launch
+        if (lastBackupFile.lastModify - LocalConfig.lastBackup > DateUtils.MINUTE_IN_MILLIS) {
+            LocalConfig.lastBackup = lastBackupFile.lastModify
+            alert("恢复", "webDav书源比本地新,是否恢复") {
+                cancelButton()
+                okButton {
+                    viewModel.restoreWebDav(lastBackupFile.displayName)
+                }
+            }
         }
     }
 
@@ -184,6 +238,13 @@ class MainActivity : VMBaseActivity<ActivityMainBinding, MainViewModel>(),
             }
         }
         return super.onKeyUp(keyCode, event)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        if (AppConfig.autoRefreshBook) {
+            outState.putBoolean("isAutoRefreshedBook", true)
+        }
     }
 
     override fun onDestroy() {

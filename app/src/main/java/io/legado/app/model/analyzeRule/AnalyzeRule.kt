@@ -12,6 +12,7 @@ import io.legado.app.help.http.CookieStore
 import io.legado.app.model.webBook.WebBook
 import io.legado.app.utils.*
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.jsoup.nodes.Entities
 import org.mozilla.javascript.NativeObject
 import java.net.URL
@@ -634,7 +635,7 @@ class AnalyzeRule(
     /**
      * 执行JS
      */
-    fun evalJS(jsStr: String, result: Any?): Any? {
+    fun evalJS(jsStr: String, result: Any? = null): Any? {
         val bindings = SimpleBindings()
         bindings["java"] = this
         bindings["cookie"] = CookieStore
@@ -666,7 +667,7 @@ class AnalyzeRule(
                 log("ajax(${urlStr}) error\n${it.stackTraceToString()}")
                 it.printOnDebug()
             }.getOrElse {
-                it.msg
+                it.stackTraceStr
             }
         }
     }
@@ -684,22 +685,36 @@ class AnalyzeRule(
     }
 
     /**
-     * 更新BookUrl,如果搜索结果有tocUrl也会更新,有些书源bookUrl定期更新,可以在js内调用更新
+     * 重新获取book
      */
-    fun refreshBookUrl() {
+    fun reGetBook() {
+        val bookSource = source as? BookSource
+        val book = book as? Book
+        if (bookSource == null || book == null) return
         runBlocking {
-            val bookSource = source as? BookSource
-            val book = book as? Book
-            if (bookSource == null || book == null) return@runBlocking
-            val books = WebBook.searchBookAwait(this, bookSource, book.name)
-            books.forEach {
-                if (it.name == book.name && it.author == book.author) {
-                    book.bookUrl = it.bookUrl
-                    if (it.tocUrl.isNotBlank()) {
-                        book.tocUrl = it.tocUrl
+            withTimeout(1800000) {
+                WebBook.preciseSearchAwait(this, bookSource, book.name, book.author)
+                    .getOrThrow().let {
+                        book.bookUrl = it.bookUrl
+                        it.variableMap.forEach { entry ->
+                            book.putVariable(entry.key, entry.value)
+                        }
                     }
-                    return@runBlocking
-                }
+                WebBook.getBookInfoAwait(bookSource, book, false)
+            }
+        }
+    }
+
+    /**
+     * 刷新详情页
+     */
+    fun refreshBook() {
+        val bookSource = source as? BookSource
+        val book = book as? Book
+        if (bookSource == null || book == null) return
+        runBlocking {
+            withTimeout(1800000) {
+                WebBook.getBookInfoAwait(bookSource, book)
             }
         }
     }
@@ -708,11 +723,13 @@ class AnalyzeRule(
      * 更新tocUrl,有些书源目录url定期更新,可以在js调用更新
      */
     fun refreshTocUrl() {
+        val bookSource = source as? BookSource
+        val book = book as? Book
+        if (bookSource == null || book == null) return
         runBlocking {
-            val bookSource = source as? BookSource
-            val book = book as? Book
-            if (bookSource == null || book == null) return@runBlocking
-            WebBook.getBookInfoAwait(this, bookSource, book)
+            withTimeout(1800000) {
+                WebBook.getBookInfoAwait(bookSource, book)
+            }
         }
     }
 

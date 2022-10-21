@@ -121,8 +121,8 @@ class TTSReadAloudService : BaseReadAloudService(), TextToSpeech.OnInitListener 
     /**
      * 暂停朗读
      */
-    override fun pauseReadAloud(pause: Boolean) {
-        super.pauseReadAloud(pause)
+    override fun pauseReadAloud(abandonFocus: Boolean) {
+        super.pauseReadAloud(abandonFocus)
         textToSpeech?.stop()
     }
 
@@ -168,6 +168,7 @@ class TTSReadAloudService : BaseReadAloudService(), TextToSpeech.OnInitListener 
             }
         }
 
+        @Deprecated("Deprecated in Java")
         override fun onError(s: String) {
             //nothing
         }

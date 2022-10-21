@@ -13,15 +13,13 @@ import io.legado.app.R
 import io.legado.app.base.VMBaseActivity
 import io.legado.app.databinding.ActivityRssArtivlesBinding
 import io.legado.app.databinding.DialogEditTextBinding
+import io.legado.app.help.source.sortUrls
 import io.legado.app.lib.dialogs.alert
 import io.legado.app.lib.theme.accentColor
 import io.legado.app.ui.login.SourceLoginActivity
 import io.legado.app.ui.rss.source.edit.RssSourceEditActivity
-import io.legado.app.utils.StartActivityContract
-import io.legado.app.utils.gone
-import io.legado.app.utils.startActivity
+import io.legado.app.utils.*
 import io.legado.app.utils.viewbindingdelegate.viewBinding
-import io.legado.app.utils.visible
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -72,6 +70,7 @@ class RssSortActivity : VMBaseActivity<ActivityRssArtivlesBinding, RssSortViewMo
                 putExtra("type", "rssSource")
                 putExtra("key", viewModel.rssSource?.sourceUrl)
             }
+            R.id.menu_refresh_sort -> viewModel.clearSortCache { upFragments() }
             R.id.menu_set_source_variable -> setSourceVariable()
             R.id.menu_edit_source -> viewModel.rssSource?.sourceUrl?.let {
                 editSourceResult.launch {
@@ -92,23 +91,30 @@ class RssSortActivity : VMBaseActivity<ActivityRssArtivlesBinding, RssSortViewMo
     }
 
     private fun upFragments() {
-        viewModel.rssSource?.sortUrls()?.let {
-            sortList.clear()
-            sortList.addAll(it)
+        launch {
+            viewModel.rssSource?.sortUrls()?.let {
+                sortList.clear()
+                sortList.addAll(it)
+            }
+            if (sortList.size == 1) {
+                binding.tabLayout.gone()
+            } else {
+                binding.tabLayout.visible()
+            }
+            adapter.notifyDataSetChanged()
         }
-        if (sortList.size == 1) {
-            binding.tabLayout.gone()
-        } else {
-            binding.tabLayout.visible()
-        }
-        adapter.notifyDataSetChanged()
     }
 
     private fun setSourceVariable() {
         launch {
-            val variable = withContext(Dispatchers.IO) { viewModel.rssSource?.getVariable() }
+            val source = viewModel.rssSource
+            if (source == null) {
+                toastOnUi("源不存在")
+                return@launch
+            }
+            val variable = withContext(Dispatchers.IO) { source.getVariable() }
             alert(R.string.set_source_variable) {
-                setMessage("源变量可在js中通过source.getVariable()获取")
+                setMessage(source.getDisplayVariableComment("源变量可在js中通过source.getVariable()获取"))
                 val alertBinding = DialogEditTextBinding.inflate(layoutInflater).apply {
                     editView.hint = "source variable"
                     editView.setText(variable)

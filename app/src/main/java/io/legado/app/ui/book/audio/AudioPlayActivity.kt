@@ -2,6 +2,7 @@ package io.legado.app.ui.book.audio
 
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.graphics.Color
 import android.icu.text.SimpleDateFormat
 import android.os.Build
 import android.os.Bundle
@@ -12,7 +13,6 @@ import androidx.activity.viewModels
 import androidx.compose.runtime.mutableStateOf
 import io.legado.app.R
 import io.legado.app.base.VMBaseActivity
-import io.legado.app.constant.BookType
 import io.legado.app.constant.EventBus
 import io.legado.app.constant.Status
 import io.legado.app.constant.Theme
@@ -21,6 +21,8 @@ import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSource
 import io.legado.app.databinding.ActivityAudioPlayBinding
+import io.legado.app.help.book.isAudio
+import io.legado.app.help.config.AppConfig
 import io.legado.app.lib.dialogs.alert
 import io.legado.app.model.AudioPlay
 import io.legado.app.model.BookCover
@@ -77,7 +79,7 @@ class AudioPlayActivity :
         }
 
     override fun onActivityCreated(savedInstanceState: Bundle?) {
-        binding.titleBar.transparent()
+        binding.titleBar.setBackgroundColor(Color.argb(60, 0, 0, 0))
         AudioPlay.titleData.observe(this) {
             binding.titleBar.title = it
         }
@@ -93,7 +95,7 @@ class AudioPlayActivity :
         return super.onCompatCreateOptionsMenu(menu)
     }
 
-    override fun onPrepareOptionsMenu(menu: Menu?): Boolean {
+    override fun onPrepareOptionsMenu(menu: Menu): Boolean {
         this.menu = menu
         upMenu()
         return super.onPrepareOptionsMenu(menu)
@@ -188,7 +190,7 @@ class AudioPlayActivity :
     }
 
     private fun upCover(path: String?) {
-        BookCover.load(this, path)
+        BookCover.load(this, path, sourceOrigin = AudioPlay.bookSource?.bookSourceUrl)
             .into(binding.ivCover)
         BookCover.loadBlur(this, path)
             .into(binding.ivBg)
@@ -206,13 +208,13 @@ class AudioPlayActivity :
         get() = AudioPlay.book
 
     override fun changeTo(source: BookSource, book: Book, toc: List<BookChapter>) {
-        if (book.type == BookType.audio) {
+        if (book.isAudio) {
             viewModel.changeTo(source, book, toc)
         } else {
             AudioPlay.stop(this)
             launch {
                 withContext(IO) {
-                    AudioPlay.book?.changeTo(book, toc)
+                    AudioPlay.book?.migrateTo(book, toc)
                     appDb.bookDao.insert(book)
                 }
                 startActivity<ReadBookActivity> {
@@ -226,13 +228,17 @@ class AudioPlayActivity :
     override fun finish() {
         AudioPlay.book?.let {
             if (!AudioPlay.inBookshelf) {
-                alert(title = getString(R.string.add_to_shelf)) {
-                    setMessage(getString(R.string.check_add_bookshelf, it.name))
-                    okButton {
-                        AudioPlay.inBookshelf = true
-                        setResult(Activity.RESULT_OK)
+                if (!AppConfig.showAddToShelfAlert) {
+                    viewModel.removeFromBookshelf { super.finish() }
+                } else {
+                    alert(title = getString(R.string.add_to_shelf)) {
+                        setMessage(getString(R.string.check_add_bookshelf, it.name))
+                        okButton {
+                            AudioPlay.inBookshelf = true
+                            setResult(Activity.RESULT_OK)
+                        }
+                        noButton { viewModel.removeFromBookshelf { super.finish() } }
                     }
-                    noButton { viewModel.removeFromBookshelf { super.finish() } }
                 }
             } else {
                 super.finish()

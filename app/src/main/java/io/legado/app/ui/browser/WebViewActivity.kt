@@ -11,23 +11,21 @@ import android.view.View
 import android.webkit.*
 import androidx.activity.viewModels
 import androidx.core.view.size
-import androidx.webkit.WebSettingsCompat
-import androidx.webkit.WebViewFeature
 import io.legado.app.R
 import io.legado.app.base.VMBaseActivity
 import io.legado.app.constant.AppConst
 import io.legado.app.databinding.ActivityWebViewBinding
-import io.legado.app.help.SourceVerificationHelp
 import io.legado.app.help.config.AppConfig
 import io.legado.app.help.http.CookieStore
+import io.legado.app.help.source.SourceVerificationHelp
 import io.legado.app.lib.dialogs.SelectItem
+import io.legado.app.lib.theme.accentColor
 import io.legado.app.model.Download
 import io.legado.app.ui.association.OnLineImportActivity
 import io.legado.app.ui.document.HandleFileContract
 import io.legado.app.utils.*
 import io.legado.app.utils.viewbindingdelegate.viewBinding
 import java.net.URLDecoder
-import kotlinx.coroutines.runBlocking
 
 class WebViewActivity : VMBaseActivity<ActivityWebViewBinding, WebViewModel>() {
 
@@ -38,13 +36,14 @@ class WebViewActivity : VMBaseActivity<ActivityWebViewBinding, WebViewModel>() {
     private var webPic: String? = null
     private val saveImage = registerForActivityResult(HandleFileContract()) {
         it.uri?.let { uri ->
-            ACache.get(this).put(imagePathKey, uri.toString())
+            ACache.get().put(imagePathKey, uri.toString())
             viewModel.saveImage(webPic, uri.toString())
         }
     }
 
     override fun onActivityCreated(savedInstanceState: Bundle?) {
         binding.titleBar.title = intent.getStringExtra("title") ?: getString(R.string.loading)
+        binding.titleBar.subtitle = intent.getStringExtra("sourceName")
         viewModel.initData(intent) {
             val url = viewModel.baseUrl
             val headerMap = viewModel.headerMap
@@ -72,6 +71,8 @@ class WebViewActivity : VMBaseActivity<ActivityWebViewBinding, WebViewModel>() {
                     viewModel.saveVerificationResult {
                         finish()
                     }
+                } else {
+                    finish()
                 }
             }
         }
@@ -80,9 +81,11 @@ class WebViewActivity : VMBaseActivity<ActivityWebViewBinding, WebViewModel>() {
 
     @SuppressLint("JavascriptInterface", "SetJavaScriptEnabled")
     private fun initWebView(url: String, headerMap: HashMap<String, String>) {
+        binding.progressBar.fontColor = accentColor
         binding.webView.webChromeClient = CustomWebChromeClient()
         binding.webView.webViewClient = CustomWebViewClient()
         binding.webView.settings.apply {
+            setDarkeningAllowed(AppConfig.isNightTheme)
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             domStorageEnabled = true
             allowContentAccess = true
@@ -96,7 +99,6 @@ class WebViewActivity : VMBaseActivity<ActivityWebViewBinding, WebViewModel>() {
         val cookieManager = CookieManager.getInstance()
         cookieManager.setCookie(url, CookieStore.getCookie(url))
         binding.webView.addJavascriptInterface(this, "app")
-        upWebViewTheme()
         binding.webView.setOnLongClickListener {
             val hitTestResult = binding.webView.hitTestResult
             if (hitTestResult.type == WebView.HitTestResult.IMAGE_TYPE ||
@@ -118,26 +120,9 @@ class WebViewActivity : VMBaseActivity<ActivityWebViewBinding, WebViewModel>() {
         }
     }
 
-    private fun upWebViewTheme() {
-        if (AppConfig.isNightTheme) {
-            if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK_STRATEGY)) {
-                WebSettingsCompat.setForceDarkStrategy(
-                    binding.webView.settings,
-                    WebSettingsCompat.DARK_STRATEGY_PREFER_WEB_THEME_OVER_USER_AGENT_DARKENING
-                )
-            }
-            if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
-                WebSettingsCompat.setForceDark(
-                    binding.webView.settings,
-                    WebSettingsCompat.FORCE_DARK_ON
-                )
-            }
-        }
-    }
-
     private fun saveImage(webPic: String) {
         this.webPic = webPic
-        val path = ACache.get(this).getAsString(imagePathKey)
+        val path = ACache.get().getAsString(imagePathKey)
         if (path.isNullOrEmpty()) {
             selectSaveFolder()
         } else {
@@ -146,7 +131,7 @@ class WebViewActivity : VMBaseActivity<ActivityWebViewBinding, WebViewModel>() {
     }
     private fun selectSaveFolder() {
         val default = arrayListOf<SelectItem<Int>>()
-        val path = ACache.get(this).getAsString(imagePathKey)
+        val path = ACache.get().getAsString(imagePathKey)
         if (!path.isNullOrEmpty()) {
             default.add(SelectItem(path, -1))
         }
@@ -190,6 +175,12 @@ class WebViewActivity : VMBaseActivity<ActivityWebViewBinding, WebViewModel>() {
 
     inner class CustomWebChromeClient : WebChromeClient() {
 
+        override fun onProgressChanged(view: WebView?, newProgress: Int) {
+            super.onProgressChanged(view, newProgress)
+            binding.progressBar.setDurProgress(newProgress)
+            binding.progressBar.gone(newProgress == 100)
+        }
+
         override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
             binding.llView.invisible()
@@ -215,8 +206,7 @@ class WebViewActivity : VMBaseActivity<ActivityWebViewBinding, WebViewModel>() {
             return true
         }
 
-        @Deprecated("Deprecated in Java")
-        @Suppress("DEPRECATION")
+        @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION", "KotlinRedundantDiagnosticSuppress")
         override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
             url?.let {
                 return shouldOverrideUrlLoading(Uri.parse(it))

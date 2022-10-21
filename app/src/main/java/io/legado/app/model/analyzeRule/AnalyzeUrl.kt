@@ -5,6 +5,7 @@ import android.util.Base64
 import androidx.annotation.Keep
 import com.bumptech.glide.load.model.GlideUrl
 import com.script.SimpleBindings
+import cn.hutool.core.util.HexUtil
 import io.legado.app.constant.AppConst.SCRIPT_ENGINE
 import io.legado.app.constant.AppConst.UA_NAME
 import io.legado.app.constant.AppPattern.JS_PATTERN
@@ -23,6 +24,8 @@ import kotlinx.coroutines.runBlocking
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import java.io.ByteArrayInputStream
+import java.io.InputStream
 import java.net.URLEncoder
 import java.util.regex.Pattern
 
@@ -72,18 +75,16 @@ class AnalyzeUrl(
     private val enabledCookieJar = source?.enabledCookieJar ?: false
 
     init {
-        if (!mUrl.isDataUrl()) {
-            val urlMatcher = paramPattern.matcher(baseUrl)
-            if (urlMatcher.find()) baseUrl = baseUrl.substring(0, urlMatcher.start())
-            (headerMapF ?: source?.getHeaderMap(true))?.let {
-                headerMap.putAll(it)
-                if (it.containsKey("proxy")) {
-                    proxy = it["proxy"]
-                    headerMap.remove("proxy")
-                }
+        val urlMatcher = paramPattern.matcher(baseUrl)
+        if (urlMatcher.find()) baseUrl = baseUrl.substring(0, urlMatcher.start())
+        (headerMapF ?: source?.getHeaderMap(true))?.let {
+            headerMap.putAll(it)
+            if (it.containsKey("proxy")) {
+                proxy = it["proxy"]
+                headerMap.remove("proxy")
             }
-            initUrl()
         }
+        initUrl()
     }
 
     /**
@@ -211,24 +212,27 @@ class AnalyzeUrl(
     }
 
     /**
-     * 解析QueryMap
+     * 解析QueryMap <key>=<value>
+     * name=
+     * name=name
+     * name=<BASE64> eg name=bmFtZQ==
      */
     private fun analyzeFields(fieldsTxt: String) {
         queryStr = fieldsTxt
         val queryS = fieldsTxt.splitNotBlank("&")
         for (query in queryS) {
-            val queryM = query.splitNotBlank("=")
-            val value = if (queryM.size > 1) queryM[1] else ""
+            val value = query.substringAfter("=")
+            val key = query.substringBefore("=")
             if (charset.isNullOrEmpty()) {
                 if (NetworkUtils.hasUrlEncoded(value)) {
-                    fieldMap[queryM[0]] = value
+                    fieldMap[key] = value
                 } else {
-                    fieldMap[queryM[0]] = URLEncoder.encode(value, "UTF-8")
+                    fieldMap[key] = URLEncoder.encode(value, "UTF-8")
                 }
             } else if (charset == "escape") {
-                fieldMap[queryM[0]] = EncoderUtils.escape(value)
+                fieldMap[key] = EncoderUtils.escape(value)
             } else {
-                fieldMap[queryM[0]] = URLEncoder.encode(value, charset)
+                fieldMap[key] = URLEncoder.encode(value, charset)
             }
         }
     }
@@ -347,63 +351,66 @@ class AnalyzeUrl(
         useWebView: Boolean = true,
     ): StrResponse {
         if (type != null) {
-            return StrResponse(url, StringUtils.byteToHexString(getByteArrayAwait()))
+            return StrResponse(url, HexUtil.encodeHexStr(getByteArrayAwait()))
         }
         val concurrentRecord = fetchStart()
-        setCookie(source?.getKey())
-        val strResponse: StrResponse
-        if (this.useWebView && useWebView) {
-            strResponse = when (method) {
-                RequestMethod.POST -> {
-                    val res = getProxyClient(proxy).newCallStrResponse(retry) {
-                        addHeaders(headerMap)
-                        url(urlNoQuery)
-                        if (fieldMap.isNotEmpty() || body.isNullOrBlank()) {
-                            postForm(fieldMap, true)
-                        } else {
-                            postJson(body)
+        try {
+            setCookie(source?.getKey())
+            val strResponse: StrResponse
+            if (this.useWebView && useWebView) {
+                strResponse = when (method) {
+                    RequestMethod.POST -> {
+                        val res = getProxyClient(proxy).newCallStrResponse(retry) {
+                            addHeaders(headerMap)
+                            url(urlNoQuery)
+                            if (fieldMap.isNotEmpty() || body.isNullOrBlank()) {
+                                postForm(fieldMap, true)
+                            } else {
+                                postJson(body)
+                            }
                         }
+                        BackstageWebView(
+                            url = res.url,
+                            html = res.body,
+                            tag = source?.getKey(),
+                            javaScript = webJs ?: jsStr,
+                            sourceRegex = sourceRegex,
+                            headerMap = headerMap
+                        ).getStrResponse()
                     }
-                    BackstageWebView(
-                        url = res.url,
-                        html = res.body,
+                    else -> BackstageWebView(
+                        url = url,
                         tag = source?.getKey(),
                         javaScript = webJs ?: jsStr,
                         sourceRegex = sourceRegex,
                         headerMap = headerMap
                     ).getStrResponse()
                 }
-                else -> BackstageWebView(
-                    url = url,
-                    tag = source?.getKey(),
-                    javaScript = webJs ?: jsStr,
-                    sourceRegex = sourceRegex,
-                    headerMap = headerMap
-                ).getStrResponse()
-            }
-        } else {
-            strResponse = getProxyClient(proxy).newCallStrResponse(retry) {
-                addHeaders(headerMap)
-                when (method) {
-                    RequestMethod.POST -> {
-                        url(urlNoQuery)
-                        val contentType = headerMap["Content-Type"]
-                        val body = body
-                        if (fieldMap.isNotEmpty() || body.isNullOrBlank()) {
-                            postForm(fieldMap, true)
-                        } else if (!contentType.isNullOrBlank()) {
-                            val requestBody = body.toRequestBody(contentType.toMediaType())
-                            post(requestBody)
-                        } else {
-                            postJson(body)
+            } else {
+                strResponse = getProxyClient(proxy).newCallStrResponse(retry) {
+                    addHeaders(headerMap)
+                    when (method) {
+                        RequestMethod.POST -> {
+                            url(urlNoQuery)
+                            val contentType = headerMap["Content-Type"]
+                            val body = body
+                            if (fieldMap.isNotEmpty() || body.isNullOrBlank()) {
+                                postForm(fieldMap, true)
+                            } else if (!contentType.isNullOrBlank()) {
+                                val requestBody = body.toRequestBody(contentType.toMediaType())
+                                post(requestBody)
+                            } else {
+                                postJson(body)
+                            }
                         }
+                        else -> get(urlNoQuery, fieldMap, true)
                     }
-                    else -> get(urlNoQuery, fieldMap, true)
                 }
             }
+            return strResponse
+        } finally {
+            fetchEnd(concurrentRecord)
         }
-        fetchEnd(concurrentRecord)
-        return strResponse
     }
 
     @JvmOverloads
@@ -422,54 +429,10 @@ class AnalyzeUrl(
      */
     suspend fun getResponseAwait(): Response {
         val concurrentRecord = fetchStart()
-        setCookie(source?.getKey())
-        @Suppress("BlockingMethodInNonBlockingContext")
-        val response = getProxyClient(proxy).newCallResponse(retry) {
-            addHeaders(headerMap)
-            when (method) {
-                RequestMethod.POST -> {
-                    url(urlNoQuery)
-                    val contentType = headerMap["Content-Type"]
-                    val body = body
-                    if (fieldMap.isNotEmpty() || body.isNullOrBlank()) {
-                        postForm(fieldMap, true)
-                    } else if (!contentType.isNullOrBlank()) {
-                        val requestBody = body.toRequestBody(contentType.toMediaType())
-                        post(requestBody)
-                    } else {
-                        postJson(body)
-                    }
-                }
-                else -> get(urlNoQuery, fieldMap, true)
-            }
-        }
-        fetchEnd(concurrentRecord)
-        return response
-    }
-
-    fun getResponse(): Response {
-        return runBlocking {
-            getResponseAwait()
-        }
-    }
-
-    /**
-     * 访问网站,返回ByteArray
-     */
-    suspend fun getByteArrayAwait(): ByteArray {
-        val concurrentRecord = fetchStart()
-
-        @Suppress("RegExpRedundantEscape")
-        val dataUriFindResult = dataUriRegex.find(urlNoQuery)
-        @Suppress("BlockingMethodInNonBlockingContext")
-        if (dataUriFindResult != null) {
-            val dataUriBase64 = dataUriFindResult.groupValues[1]
-            val byteArray = Base64.decode(dataUriBase64, Base64.DEFAULT)
-            fetchEnd(concurrentRecord)
-            return byteArray
-        } else {
+        try {
             setCookie(source?.getKey())
-            val byteArray = getProxyClient(proxy).newCallResponseBody(retry) {
+            @Suppress("BlockingMethodInNonBlockingContext")
+            val response = getProxyClient(proxy).newCallResponse(retry) {
                 addHeaders(headerMap)
                 when (method) {
                     RequestMethod.POST -> {
@@ -487,15 +450,70 @@ class AnalyzeUrl(
                     }
                     else -> get(urlNoQuery, fieldMap, true)
                 }
-            }.bytes()
+            }
+            return response
+        } finally {
             fetchEnd(concurrentRecord)
-            return byteArray
+        }
+    }
+
+    fun getResponse(): Response {
+        return runBlocking {
+            getResponseAwait()
+        }
+    }
+
+    /**
+     * 访问网站,返回ByteArray
+     */
+    @Suppress("UnnecessaryVariable")
+    suspend fun getByteArrayAwait(): ByteArray {
+        val concurrentRecord = fetchStart()
+        try {
+            @Suppress("RegExpRedundantEscape")
+            val dataUriFindResult = dataUriRegex.find(urlNoQuery)
+            @Suppress("BlockingMethodInNonBlockingContext")
+            if (dataUriFindResult != null) {
+                val dataUriBase64 = dataUriFindResult.groupValues[1]
+                val byteArray = Base64.decode(dataUriBase64, Base64.DEFAULT)
+                return byteArray
+            } else {
+                setCookie(source?.getKey())
+                val byteArray = getProxyClient(proxy).newCallResponseBody(retry) {
+                    addHeaders(headerMap)
+                    when (method) {
+                        RequestMethod.POST -> {
+                            url(urlNoQuery)
+                            val contentType = headerMap["Content-Type"]
+                            val body = body
+                            if (fieldMap.isNotEmpty() || body.isNullOrBlank()) {
+                                postForm(fieldMap, true)
+                            } else if (!contentType.isNullOrBlank()) {
+                                val requestBody = body.toRequestBody(contentType.toMediaType())
+                                post(requestBody)
+                            } else {
+                                postJson(body)
+                            }
+                        }
+                        else -> get(urlNoQuery, fieldMap, true)
+                    }
+                }.bytes()
+                return byteArray
+            }
+        } finally {
+            fetchEnd(concurrentRecord)
         }
     }
 
     fun getByteArray(): ByteArray {
         return runBlocking {
             getByteArrayAwait()
+        }
+    }
+
+    fun getInputStream(): InputStream {
+        return runBlocking {
+            getResponseAwait().body!!.byteStream()
         }
     }
 
@@ -554,7 +572,7 @@ class AnalyzeUrl(
     }
 
     fun getUserAgent(): String {
-        return headerMap[UA_NAME] ?: AppConfig.userAgent
+        return headerMap.get(UA_NAME, true) ?: AppConfig.userAgent
     }
 
     fun isPost(): Boolean {

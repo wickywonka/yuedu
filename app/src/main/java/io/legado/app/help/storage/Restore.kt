@@ -11,7 +11,10 @@ import io.legado.app.constant.EventBus
 import io.legado.app.constant.PreferKey
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.*
+import io.legado.app.help.DirectLinkUpload
 import io.legado.app.help.LauncherIconHelp
+import io.legado.app.help.book.upType
+import io.legado.app.help.config.LocalConfig
 import io.legado.app.help.config.ReadBookConfig
 import io.legado.app.help.config.ThemeConfig
 import io.legado.app.utils.*
@@ -24,7 +27,9 @@ import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 
-
+/**
+ * 恢复
+ */
 object Restore {
 
     suspend fun restore(context: Context, path: String) {
@@ -55,11 +60,15 @@ object Restore {
         }
         restoreDatabase()
         restoreConfig()
+        LocalConfig.lastBackup = System.currentTimeMillis()
     }
 
     suspend fun restoreDatabase(path: String = Backup.backupPath) {
         withContext(IO) {
             fileToListT<Book>(path, "bookshelf.json")?.let {
+                it.forEach { book ->
+                    book.upType()
+                }
                 appDb.bookDao.insert(*it.toTypedArray())
             }
             fileToListT<Bookmark>(path, "bookmark.json")?.let {
@@ -118,6 +127,16 @@ object Restore {
         withContext(IO) {
             try {
                 val file =
+                    FileUtils.createFileIfNotExist("$path${File.separator}${DirectLinkUpload.ruleFileName}")
+                if (file.exists()) {
+                    val json = file.readText()
+                    ACache.get(cacheDir = false).put(DirectLinkUpload.ruleFileName, json)
+                }
+            } catch (e: Exception) {
+                AppLog.put("直链上传出错\n${e.localizedMessage}", e)
+            }
+            try {
+                val file =
                     FileUtils.createFileIfNotExist("$path${File.separator}${ThemeConfig.configFileName}")
                 if (file.exists()) {
                     FileUtils.delete(ThemeConfig.configFilePath)
@@ -152,7 +171,7 @@ object Restore {
                     AppLog.put("恢复阅读界面出错\n${e.localizedMessage}", e)
                 }
             }
-            Preferences.getSharedPreferences(appCtx, path, "config")?.all?.let { map ->
+            appCtx.getSharedPreferences(path, "config")?.all?.let { map ->
                 val edit = appCtx.defaultSharedPreferences.edit()
                 map.forEach { (key, value) ->
                     if (BackupConfig.keyIsNotIgnore(key)) {

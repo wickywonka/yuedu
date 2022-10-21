@@ -9,15 +9,18 @@ import androidx.activity.viewModels
 import androidx.recyclerview.widget.LinearLayoutManager
 import com.google.android.material.tabs.TabLayout
 import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
+import io.legado.app.BuildConfig
 import io.legado.app.R
 import io.legado.app.base.VMBaseActivity
-import io.legado.app.constant.BookType
+import io.legado.app.constant.BookSourceType
+import io.legado.app.data.appDb
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.rule.*
 import io.legado.app.databinding.ActivityBookSourceEditBinding
 import io.legado.app.help.config.LocalConfig
 import io.legado.app.lib.dialogs.SelectItem
 import io.legado.app.lib.dialogs.alert
+import io.legado.app.lib.dialogs.selector
 import io.legado.app.lib.theme.accentColor
 import io.legado.app.lib.theme.backgroundColor
 import io.legado.app.lib.theme.primaryColor
@@ -30,6 +33,9 @@ import io.legado.app.ui.widget.dialog.UrlOptionDialog
 import io.legado.app.ui.widget.keyboard.KeyboardToolPop
 import io.legado.app.utils.*
 import io.legado.app.utils.viewbindingdelegate.viewBinding
+import kotlinx.coroutines.Dispatchers.IO
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class BookSourceEditActivity :
     VMBaseActivity<ActivityBookSourceEditBinding, BookSourceEditViewModel>(false),
@@ -41,10 +47,11 @@ class BookSourceEditActivity :
     private val adapter by lazy { BookSourceEditAdapter() }
     private val sourceEntities: ArrayList<EditEntity> = ArrayList()
     private val searchEntities: ArrayList<EditEntity> = ArrayList()
-    private val findEntities: ArrayList<EditEntity> = ArrayList()
+    private val exploreEntities: ArrayList<EditEntity> = ArrayList()
     private val infoEntities: ArrayList<EditEntity> = ArrayList()
     private val tocEntities: ArrayList<EditEntity> = ArrayList()
     private val contentEntities: ArrayList<EditEntity> = ArrayList()
+    private val reviewEntities: ArrayList<EditEntity> = ArrayList()
     private val qrCodeResult = registerForActivityResult(QrCodeResult()) {
         it ?: return@registerForActivityResult
         viewModel.importSource(it) { source ->
@@ -86,7 +93,7 @@ class BookSourceEditActivity :
     }
 
     override fun onMenuOpened(featureId: Int, menu: Menu): Boolean {
-        menu.findItem(R.id.menu_login)?.isVisible = !viewModel.bookSource?.loginUrl.isNullOrBlank()
+        menu.findItem(R.id.menu_login)?.isVisible = !getSource().loginUrl.isNullOrBlank()
         menu.findItem(R.id.menu_auto_complete)?.isChecked = viewModel.autoComplete
         return super.onMenuOpened(featureId, menu)
     }
@@ -137,6 +144,9 @@ class BookSourceEditActivity :
     }
 
     private fun initView() {
+        if (!BuildConfig.DEBUG) {
+            binding.tabLayout.removeTabAt(6)
+        }
         binding.recyclerView.setEdgeEffectColor(primaryColor)
         binding.recyclerView.layoutManager = LinearLayoutManager(this)
         binding.recyclerView.adapter = adapter
@@ -180,10 +190,11 @@ class BookSourceEditActivity :
     private fun setEditEntities(tabPosition: Int?) {
         when (tabPosition) {
             1 -> adapter.editEntities = searchEntities
-            2 -> adapter.editEntities = findEntities
+            2 -> adapter.editEntities = exploreEntities
             3 -> adapter.editEntities = infoEntities
             4 -> adapter.editEntities = tocEntities
             5 -> adapter.editEntities = contentEntities
+            6 -> adapter.editEntities = reviewEntities
             else -> adapter.editEntities = sourceEntities
         }
         binding.recyclerView.scrollToPosition(0)
@@ -192,18 +203,19 @@ class BookSourceEditActivity :
     private fun upSourceView(source: BookSource? = viewModel.bookSource) {
         source?.let {
             binding.cbIsEnable.isChecked = it.enabled
-            binding.cbIsEnableFind.isChecked = it.enabledExplore
+            binding.cbIsEnableExplore.isChecked = it.enabledExplore
             binding.cbIsEnableCookie.isChecked = it.enabledCookieJar ?: false
+            binding.cbIsEnableReview.isChecked = it.enabledReview ?: false
             binding.spType.setSelection(
                 when (it.bookSourceType) {
-                    BookType.file -> 3
-                    BookType.image -> 2
-                    BookType.audio -> 1
+                    BookSourceType.file -> 3
+                    BookSourceType.image -> 2
+                    BookSourceType.audio -> 1
                     else -> 0
                 }
             )
         }
-        //基本信息
+        // 基本信息
         sourceEntities.clear()
         sourceEntities.apply {
             add(EditEntity("bookSourceUrl", source?.bookSourceUrl, R.string.source_url))
@@ -213,15 +225,13 @@ class BookSourceEditActivity :
             add(EditEntity("loginUrl", source?.loginUrl, R.string.login_url))
             add(EditEntity("loginUi", source?.loginUi, R.string.login_ui))
             add(EditEntity("loginCheckJs", source?.loginCheckJs, R.string.login_check_js))
+            add(EditEntity("coverDecodeJs", source?.coverDecodeJs, R.string.cover_decode_js))
             add(EditEntity("bookUrlPattern", source?.bookUrlPattern, R.string.book_url_pattern))
             add(EditEntity("header", source?.header, R.string.source_http_header))
-            add(
-                EditEntity(
-                    "concurrentRate", source?.concurrentRate, R.string.source_concurrent_rate
-                )
-            )
+            add(EditEntity("variableComment", source?.variableComment, R.string.variable_comment))
+            add(EditEntity("concurrentRate", source?.concurrentRate, R.string.concurrent_rate))
         }
-        //搜索
+        // 搜索
         val sr = source?.getSearchRule()
         searchEntities.clear()
         searchEntities.apply {
@@ -237,10 +247,10 @@ class BookSourceEditActivity :
             add(EditEntity("coverUrl", sr?.coverUrl, R.string.rule_cover_url))
             add(EditEntity("bookUrl", sr?.bookUrl, R.string.r_book_url))
         }
-        //发现
+        // 发现
         val er = source?.getExploreRule()
-        findEntities.clear()
-        findEntities.apply {
+        exploreEntities.clear()
+        exploreEntities.apply {
             add(EditEntity("exploreUrl", source?.exploreUrl, R.string.r_find_url))
             add(EditEntity("bookList", er?.bookList, R.string.r_book_list))
             add(EditEntity("name", er?.name, R.string.r_book_name))
@@ -252,7 +262,7 @@ class BookSourceEditActivity :
             add(EditEntity("coverUrl", er?.coverUrl, R.string.rule_cover_url))
             add(EditEntity("bookUrl", er?.bookUrl, R.string.r_book_url))
         }
-        //详情页
+        // 详情页
         val ir = source?.getBookInfoRule()
         infoEntities.clear()
         infoEntities.apply {
@@ -268,10 +278,11 @@ class BookSourceEditActivity :
             add(EditEntity("canReName", ir?.canReName, R.string.rule_can_re_name))
             add(EditEntity("downloadUrls", ir?.downloadUrls, R.string.download_url_rule))
         }
-        //目录页
+        // 目录页
         val tr = source?.getTocRule()
         tocEntities.clear()
         tocEntities.apply {
+            add(EditEntity("preUpdateJs", tr?.preUpdateJs, R.string.pre_update_js))
             add(EditEntity("chapterList", tr?.chapterList, R.string.rule_chapter_list))
             add(EditEntity("chapterName", tr?.chapterName, R.string.rule_chapter_name))
             add(EditEntity("chapterUrl", tr?.chapterUrl, R.string.rule_chapter_url))
@@ -281,7 +292,7 @@ class BookSourceEditActivity :
             add(EditEntity("isPay", tr?.isPay, R.string.rule_is_pay))
             add(EditEntity("nextTocUrl", tr?.nextTocUrl, R.string.rule_next_toc_url))
         }
-        //正文页
+        // 正文页
         val cr = source?.getContentRule()
         contentEntities.clear()
         contentEntities.apply {
@@ -291,7 +302,23 @@ class BookSourceEditActivity :
             add(EditEntity("sourceRegex", cr?.sourceRegex, R.string.rule_source_regex))
             add(EditEntity("replaceRegex", cr?.replaceRegex, R.string.rule_replace_regex))
             add(EditEntity("imageStyle", cr?.imageStyle, R.string.rule_image_style))
+            add(EditEntity("imageDecode", cr?.imageDecode, R.string.rule_image_decode))
             add(EditEntity("payAction", cr?.payAction, R.string.rule_pay_action))
+        }
+        // 段评
+        val rr = source?.getReviewRule()
+        reviewEntities.clear()
+        reviewEntities.apply {
+            add(EditEntity("reviewUrl", rr?.reviewUrl, R.string.rule_review_url))
+            add(EditEntity("avatarRule", rr?.avatarRule, R.string.rule_avatar))
+            add(EditEntity("contentRule", rr?.contentRule, R.string.rule_review_content))
+            add(EditEntity("postTimeRule", rr?.postTimeRule, R.string.rule_post_time))
+            add(EditEntity("reviewQuoteUrl", rr?.reviewQuoteUrl, R.string.rule_review_quote))
+            add(EditEntity("voteUpUrl", rr?.voteUpUrl, R.string.review_vote_up))
+            add(EditEntity("voteDownUrl", rr?.voteDownUrl, R.string.review_vote_down))
+            add(EditEntity("postReviewUrl", rr?.postReviewUrl, R.string.post_review_url))
+            add(EditEntity("postQuoteUrl", rr?.postQuoteUrl, R.string.post_quote_url))
+            add(EditEntity("deleteUrl", rr?.deleteUrl, R.string.delete_review_url))
         }
         binding.tabLayout.selectTab(binding.tabLayout.getTabAt(0))
         setEditEntities(0)
@@ -300,19 +327,21 @@ class BookSourceEditActivity :
     private fun getSource(): BookSource {
         val source = viewModel.bookSource?.copy() ?: BookSource()
         source.enabled = binding.cbIsEnable.isChecked
-        source.enabledExplore = binding.cbIsEnableFind.isChecked
+        source.enabledExplore = binding.cbIsEnableExplore.isChecked
         source.enabledCookieJar = binding.cbIsEnableCookie.isChecked
+        source.enabledReview = binding.cbIsEnableReview.isChecked
         source.bookSourceType = when (binding.spType.selectedItemPosition) {
-            3 -> BookType.file
-            2 -> BookType.image
-            1 -> BookType.audio
-            else -> BookType.default
+            3 -> BookSourceType.file
+            2 -> BookSourceType.image
+            1 -> BookSourceType.audio
+            else -> BookSourceType.default
         }
         val searchRule = SearchRule()
         val exploreRule = ExploreRule()
         val bookInfoRule = BookInfoRule()
         val tocRule = TocRule()
         val contentRule = ContentRule()
+        val reviewRule = ReviewRule()
         sourceEntities.forEach {
             when (it.key) {
                 "bookSourceUrl" -> source.bookSourceUrl = it.value ?: ""
@@ -321,17 +350,19 @@ class BookSourceEditActivity :
                 "loginUrl" -> source.loginUrl = it.value
                 "loginUi" -> source.loginUi = it.value
                 "loginCheckJs" -> source.loginCheckJs = it.value
+                "coverDecodeJs" -> source.coverDecodeJs = it.value
                 "bookUrlPattern" -> source.bookUrlPattern = it.value
                 "header" -> source.header = it.value
-                "bookSourceComment" -> source.bookSourceComment = it.value ?: ""
+                "bookSourceComment" -> source.bookSourceComment = it.value
                 "concurrentRate" -> source.concurrentRate = it.value
+                "variableComment" -> source.variableComment = it.value
             }
         }
         searchEntities.forEach {
             when (it.key) {
                 "searchUrl" -> source.searchUrl = it.value
                 "checkKeyWord" -> searchRule.checkKeyWord = it.value
-                "bookList" -> searchRule.bookList = it.value ?: ""
+                "bookList" -> searchRule.bookList = it.value
                 "name" -> searchRule.name =
                     viewModel.ruleComplete(it.value, searchRule.bookList)
                 "author" -> searchRule.author =
@@ -352,10 +383,10 @@ class BookSourceEditActivity :
                     viewModel.ruleComplete(it.value, searchRule.bookList, 2)
             }
         }
-        findEntities.forEach {
+        exploreEntities.forEach {
             when (it.key) {
                 "exploreUrl" -> source.exploreUrl = it.value
-                "bookList" -> exploreRule.bookList = it.value ?: ""
+                "bookList" -> exploreRule.bookList = it.value
                 "name" -> exploreRule.name =
                     viewModel.ruleComplete(it.value, exploreRule.bookList)
                 "author" -> exploreRule.author =
@@ -378,7 +409,7 @@ class BookSourceEditActivity :
         }
         infoEntities.forEach {
             when (it.key) {
-                "init" -> bookInfoRule.init = it.value ?: ""
+                "init" -> bookInfoRule.init = it.value
                 "name" -> bookInfoRule.name = viewModel.ruleComplete(it.value, bookInfoRule.init)
                 "author" -> bookInfoRule.author =
                     viewModel.ruleComplete(it.value, bookInfoRule.init)
@@ -397,12 +428,14 @@ class BookSourceEditActivity :
                 "tocUrl" -> bookInfoRule.tocUrl =
                     viewModel.ruleComplete(it.value, bookInfoRule.init, 2)
                 "canReName" -> bookInfoRule.canReName = it.value
-                "downloadUrls" -> bookInfoRule.downloadUrls = viewModel.ruleComplete(it.value, bookInfoRule.init)
+                "downloadUrls" -> bookInfoRule.downloadUrls =
+                    viewModel.ruleComplete(it.value, bookInfoRule.init)
             }
         }
         tocEntities.forEach {
             when (it.key) {
-                "chapterList" -> tocRule.chapterList = it.value ?: ""
+                "preUpdateJs" -> tocRule.preUpdateJs = it.value
+                "chapterList" -> tocRule.chapterList = it.value
                 "chapterName" -> tocRule.chapterName =
                     viewModel.ruleComplete(it.value, tocRule.chapterList)
                 "chapterUrl" -> tocRule.chapterUrl =
@@ -425,7 +458,26 @@ class BookSourceEditActivity :
                 "sourceRegex" -> contentRule.sourceRegex = it.value
                 "replaceRegex" -> contentRule.replaceRegex = it.value
                 "imageStyle" -> contentRule.imageStyle = it.value
+                "imageDecode" -> contentRule.imageDecode = it.value
                 "payAction" -> contentRule.payAction = it.value
+            }
+        }
+        reviewEntities.forEach {
+            when (it.key) {
+                "reviewUrl" -> reviewRule.reviewUrl = it.value
+                "avatarRule" -> reviewRule.avatarRule =
+                    viewModel.ruleComplete(it.value, reviewRule.reviewUrl, 3)
+                "contentRule" -> reviewRule.contentRule =
+                    viewModel.ruleComplete(it.value, reviewRule.reviewUrl)
+                "postTimeRule" -> reviewRule.postTimeRule =
+                    viewModel.ruleComplete(it.value, reviewRule.reviewUrl)
+                "reviewQuoteUrl" -> reviewRule.reviewQuoteUrl =
+                    viewModel.ruleComplete(it.value, reviewRule.reviewUrl, 2)
+                "voteUpUrl" -> reviewRule.voteUpUrl = it.value
+                "voteDownUrl" -> reviewRule.voteDownUrl = it.value
+                "postReviewUrl" -> reviewRule.postReviewUrl = it.value
+                "postQuoteUrl" -> reviewRule.postQuoteUrl = it.value
+                "deleteUrl" -> reviewRule.deleteUrl =it.value
             }
         }
         source.ruleSearch = searchRule
@@ -433,6 +485,7 @@ class BookSourceEditActivity :
         source.ruleBookInfo = bookInfoRule
         source.ruleToc = tocRule
         source.ruleContent = contentRule
+        source.ruleReview = reviewRule
         return source
     }
 
@@ -444,21 +497,46 @@ class BookSourceEditActivity :
         return true
     }
 
+    private fun alertGroups() {
+        launch {
+            val groups = withContext(IO) {
+                appDb.bookSourceDao.allGroups
+            }
+            selector(groups) { _, s, _ ->
+                sendText(s)
+            }
+        }
+    }
+
     override fun helpActions(): List<SelectItem<String>> {
-        return arrayListOf(
+        val helpActions = arrayListOf(
             SelectItem("插入URL参数", "urlOption"),
             SelectItem("书源教程", "ruleHelp"),
             SelectItem("js教程", "jsHelp"),
             SelectItem("正则教程", "regexHelp"),
-            SelectItem("选择文件", "selectFile"),
         )
+        val view = window.decorView.findFocus()
+        if (view is EditText) {
+            when (view.getTag(R.id.tag)) {
+                "bookSourceGroup" -> {
+                    helpActions.add(
+                        SelectItem("插入分组", "addGroup")
+                    )
+                }
+                else -> {
+                    helpActions.add(
+                        SelectItem("选择文件", "selectFile")
+                    )
+                }
+            }
+        }
+        return helpActions
     }
 
     override fun onHelpActionSelect(action: String) {
         when (action) {
-            "urlOption" -> UrlOptionDialog(this) {
-                sendText(it)
-            }.show()
+            "addGroup" -> alertGroups()
+            "urlOption" -> UrlOptionDialog(this) { sendText(it) }.show()
             "ruleHelp" -> showHelp("ruleHelp")
             "jsHelp" -> showHelp("jsHelp")
             "regexHelp" -> showHelp("regexHelp")

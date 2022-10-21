@@ -21,12 +21,15 @@ import io.legado.app.lib.theme.primaryColor
 import io.legado.app.model.CheckSource
 import io.legado.app.receiver.SharedReceiverActivity
 import io.legado.app.service.WebService
+import io.legado.app.ui.book.read.page.provider.ImageProvider
 import io.legado.app.ui.document.HandleFileContract
 import io.legado.app.ui.widget.number.NumberPickerDialog
 import io.legado.app.utils.*
 import splitties.init.appCtx
 
-
+/**
+ * 其它设置
+ */
 class OtherConfigFragment : PreferenceFragment(),
     SharedPreferences.OnSharedPreferenceChangeListener {
 
@@ -56,6 +59,8 @@ class OtherConfigFragment : PreferenceFragment(),
             upPreferenceSummary(PreferKey.defaultBookTreeUri, it)
         }
         upPreferenceSummary(PreferKey.checkSource, CheckSource.summary)
+        upPreferenceSummary(PreferKey.bitmapCacheSize, AppConfig.bitmapCacheSize.toString())
+        upPreferenceSummary(PreferKey.sourceEditMaxLine, AppConfig.sourceEditMaxLine.toString())
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
@@ -104,6 +109,27 @@ class OtherConfigFragment : PreferenceFragment(),
             PreferKey.cleanCache -> clearCache()
             PreferKey.uploadRule -> showDialogFragment<DirectLinkUploadConfig>()
             PreferKey.checkSource -> showDialogFragment<CheckSourceConfig>()
+            PreferKey.bitmapCacheSize -> {
+                NumberPickerDialog(requireContext())
+                    .setTitle(getString(R.string.bitmap_cache_size))
+                    .setMaxValue(9999)
+                    .setMinValue(1)
+                    .setValue(AppConfig.bitmapCacheSize)
+                    .show {
+                        AppConfig.bitmapCacheSize = it
+                        ImageProvider.bitmapLruCache.resize(ImageProvider.cacheSize)
+                    }
+            }
+            PreferKey.sourceEditMaxLine -> {
+                NumberPickerDialog(requireContext())
+                    .setTitle(getString(R.string.source_edit_text_max_line))
+                    .setMaxValue(99)
+                    .setMinValue(10)
+                    .setValue(AppConfig.sourceEditMaxLine)
+                    .show {
+                        AppConfig.sourceEditMaxLine = it
+                    }
+            }
         }
         return super.onPreferenceTreeClick(preference)
     }
@@ -141,6 +167,12 @@ class OtherConfigFragment : PreferenceFragment(),
             PreferKey.checkSource -> listView.post {
                 upPreferenceSummary(PreferKey.checkSource, CheckSource.summary)
             }
+            PreferKey.bitmapCacheSize -> {
+                upPreferenceSummary(key, AppConfig.bitmapCacheSize.toString())
+            }
+            PreferKey.sourceEditMaxLine -> {
+                upPreferenceSummary(key, AppConfig.sourceEditMaxLine.toString())
+            }
         }
     }
 
@@ -151,6 +183,10 @@ class OtherConfigFragment : PreferenceFragment(),
                 getString(R.string.pre_download_s, value)
             PreferKey.threadCount -> preference.summary = getString(R.string.threads_num, value)
             PreferKey.webPort -> preference.summary = getString(R.string.web_port_summary, value)
+            PreferKey.bitmapCacheSize -> preference.summary =
+                getString(R.string.bitmap_cache_size_summary, value)
+            PreferKey.sourceEditMaxLine -> preference.summary =
+                getString(R.string.source_edit_max_line_summary, value)
             else -> if (preference is ListPreference) {
                 val index = preference.findIndexOfValue(value)
                 // Set the summary to reflect the new value.

@@ -2,6 +2,7 @@ package io.legado.app.help.config
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.os.Build
 import io.legado.app.BuildConfig
 import io.legado.app.constant.AppConst
 import io.legado.app.constant.PreferKey
@@ -135,6 +136,7 @@ object AppConfig : SharedPreferences.OnSharedPreferenceChangeListener {
             }
         }
 
+    // 书籍保存位置
     var defaultBookTreeUri: String?
         get() = appCtx.getPrefString(PreferKey.defaultBookTreeUri)
         set(value) {
@@ -154,12 +156,19 @@ object AppConfig : SharedPreferences.OnSharedPreferenceChangeListener {
     val autoRefreshBook: Boolean
         get() = appCtx.getPrefBoolean(PreferKey.autoRefresh)
 
+    var enableReview: Boolean
+        get() = appCtx.getPrefBoolean(PreferKey.enableReview, false) && BuildConfig.DEBUG
+        set(value) {
+            appCtx.putPrefBoolean(PreferKey.enableReview, value)
+        }
+
     var threadCount: Int
         get() = appCtx.getPrefInt(PreferKey.threadCount, 16)
         set(value) {
             appCtx.putPrefInt(PreferKey.threadCount, value)
         }
 
+    // 添加本地选择的目录
     var importBookPath: String?
         get() = appCtx.getPrefString("importBookPath")
         set(value) {
@@ -176,12 +185,21 @@ object AppConfig : SharedPreferences.OnSharedPreferenceChangeListener {
             appCtx.putPrefBoolean(PreferKey.ttsFollowSys, value)
         }
 
+    val noAnimScrollPage: Boolean
+        get() = appCtx.getPrefBoolean(PreferKey.noAnimScrollPage, false)
+
     const val defaultSpeechRate = 5
 
     var ttsSpeechRate: Int
         get() = appCtx.getPrefInt(PreferKey.ttsSpeechRate, defaultSpeechRate)
         set(value) {
             appCtx.putPrefInt(PreferKey.ttsSpeechRate, value)
+        }
+
+    var ttsTimer: Int
+        get() = appCtx.getPrefInt(PreferKey.ttsTimer, 0)
+        set(value) {
+            appCtx.putPrefInt(PreferKey.ttsTimer, value)
         }
 
     val speechRatePlay: Int get() = if (ttsFlowSys) defaultSpeechRate else ttsSpeechRate
@@ -243,6 +261,17 @@ object AppConfig : SharedPreferences.OnSharedPreferenceChangeListener {
         set(value) {
             appCtx.putPrefInt(PreferKey.exportType, value)
         }
+    var exportPictureFile: Boolean
+        get() = appCtx.getPrefBoolean(PreferKey.exportPictureFile, false)
+        set(value) {
+            appCtx.putPrefBoolean(PreferKey.exportPictureFile, value)
+        }
+
+    var parallelExportBook: Boolean
+        get() = appCtx.getPrefBoolean(PreferKey.parallelExportBook, false)
+        set(value) {
+            appCtx.putPrefBoolean(PreferKey.parallelExportBook, value)
+        }
 
     var changeSourceCheckAuthor: Boolean
         get() = appCtx.getPrefBoolean(PreferKey.changeSourceCheckAuthor)
@@ -289,6 +318,12 @@ object AppConfig : SharedPreferences.OnSharedPreferenceChangeListener {
             appCtx.putPrefBoolean(PreferKey.changeSourceLoadToc, value)
         }
 
+    var contentSelectSpeakMod: Int
+        get() = appCtx.getPrefInt(PreferKey.contentSelectSpeakMod)
+        set(value) {
+            appCtx.putPrefInt(PreferKey.contentSelectSpeakMod, value)
+        }
+
     val importKeepName get() = appCtx.getPrefBoolean(PreferKey.importKeepName)
 
     var preDownloadNum
@@ -303,17 +338,46 @@ object AppConfig : SharedPreferences.OnSharedPreferenceChangeListener {
 
     val webDavDir get() = appCtx.getPrefString(PreferKey.webDavDir, "legado")
 
+    val webDavDeviceName get() = appCtx.getPrefString(PreferKey.webDavDeviceName, Build.MODEL)
+
     val recordLog get() = appCtx.getPrefBoolean(PreferKey.recordLog)
 
-    val loadCoverOnlyWifi = appCtx.getPrefBoolean(PreferKey.loadCoverOnlyWifi, false)
+    val loadCoverOnlyWifi get() = appCtx.getPrefBoolean(PreferKey.loadCoverOnlyWifi, false)
 
-    val doublePageHorizontal: Boolean
-        get() = appCtx.getPrefBoolean(PreferKey.doublePageHorizontal, true)
+    val showAddToShelfAlert get() = appCtx.getPrefBoolean(PreferKey.showAddToShelfAlert, true)
+
+    val asyncLoadImage get() = appCtx.getPrefBoolean(PreferKey.asyncLoadImage, false)
+
+    val ignoreAudioFocus get() = appCtx.getPrefBoolean(PreferKey.ignoreAudioFocus, false)
+
+    val doublePageHorizontal: String?
+        get() = appCtx.getPrefString(PreferKey.doublePageHorizontal)
+
+    val progressBarBehavior: String?
+        get() = appCtx.getPrefString(PreferKey.progressBarBehavior, "page")
+
+    var searchScope: String
+        get() = appCtx.getPrefString("searchScope") ?: ""
+        set(value) {
+            appCtx.putPrefString("searchScope", value)
+        }
 
     var searchGroup: String
         get() = appCtx.getPrefString("searchGroup") ?: ""
         set(value) {
             appCtx.putPrefString("searchGroup", value)
+        }
+
+    var pageTouchSlop: Int
+        get() = appCtx.getPrefInt(PreferKey.pageTouchSlop, 0)
+        set(value) {
+            appCtx.putPrefInt(PreferKey.pageTouchSlop, value)
+        }
+
+    var bookshelfSort: Int
+        get() = appCtx.getPrefInt(PreferKey.bookshelfSort, 0)
+        set(value) {
+            appCtx.putPrefInt(PreferKey.bookshelfSort, value)
         }
 
     private fun getPrefUserAgent(): String {
@@ -323,5 +387,34 @@ object AppConfig : SharedPreferences.OnSharedPreferenceChangeListener {
         }
         return ua
     }
+
+    var bitmapCacheSize: Int
+        get() = appCtx.getPrefInt(PreferKey.bitmapCacheSize, 50)
+        set(value) {
+            appCtx.putPrefInt(PreferKey.bitmapCacheSize, value)
+        }
+
+    var showReadTitleBarAddition: Boolean
+        get() = appCtx.getPrefBoolean(PreferKey.showReadTitleAddition, true)
+        set(value) {
+            appCtx.putPrefBoolean(PreferKey.showReadTitleAddition, value)
+        }
+    var readBarStyleFollowPage: Boolean
+        get() = appCtx.getPrefBoolean(PreferKey.readBarStyleFollowPage, false)
+        set(value) {
+            appCtx.putPrefBoolean(PreferKey.readBarStyleFollowPage, value)
+        }
+
+    var sourceEditMaxLine: Int
+        get() {
+            val maxLine = appCtx.getPrefInt(PreferKey.sourceEditMaxLine, 99)
+            if (maxLine < 10) {
+                return 99
+            }
+            return maxLine
+        }
+        set(value) {
+            appCtx.putPrefInt(PreferKey.sourceEditMaxLine, value)
+        }
 }
 

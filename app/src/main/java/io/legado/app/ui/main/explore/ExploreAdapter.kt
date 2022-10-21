@@ -10,12 +10,13 @@ import com.google.android.flexbox.FlexboxLayout
 import io.legado.app.R
 import io.legado.app.base.adapter.ItemViewHolder
 import io.legado.app.base.adapter.RecyclerAdapter
-import io.legado.app.data.appDb
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.rule.ExploreKind
 import io.legado.app.databinding.ItemFilletTextBinding
 import io.legado.app.databinding.ItemFindBookBinding
 import io.legado.app.help.coroutine.Coroutine
+import io.legado.app.help.source.clearExploreKindsCache
+import io.legado.app.help.source.exploreKinds
 import io.legado.app.lib.theme.accentColor
 import io.legado.app.ui.login.SourceLoginActivity
 import io.legado.app.ui.widget.dialog.TextDialog
@@ -57,7 +58,7 @@ class ExploreAdapter(context: Context, val callBack: CallBack) :
                     callBack.scrollTo(scrollTo)
                 }
                 Coroutine.async(callBack.scope) {
-                    item.exploreKinds
+                    item.exploreKinds()
                 }.onSuccess { kindList ->
                     upKindList(flexbox, item.bookSourceUrl, kindList)
                 }.onFinally {
@@ -77,7 +78,7 @@ class ExploreAdapter(context: Context, val callBack: CallBack) :
     }
 
     private fun upKindList(flexbox: FlexboxLayout, sourceUrl: String, kinds: List<ExploreKind>) {
-        if (!kinds.isNullOrEmpty()) kotlin.runCatching {
+        if (kinds.isNotEmpty()) kotlin.runCatching {
             recyclerFlexbox(flexbox)
             flexbox.visible()
             kinds.forEach { kind ->
@@ -168,13 +169,11 @@ class ExploreAdapter(context: Context, val callBack: CallBack) :
                     putExtra("key", source.bookSourceUrl)
                 }
                 R.id.menu_refresh -> Coroutine.async(callBack.scope) {
-                    ACache.get(context, "explore").remove(source.bookSourceUrl)
+                    source.clearExploreKindsCache()
                 }.onSuccess {
-                    callBack.refreshData()
+                    notifyItemChanged(position)
                 }
-                R.id.menu_del -> Coroutine.async(callBack.scope) {
-                    appDb.bookSourceDao.delete(source)
-                }
+                R.id.menu_del -> callBack.deleteSource(source)
             }
             true
         }
@@ -184,10 +183,10 @@ class ExploreAdapter(context: Context, val callBack: CallBack) :
 
     interface CallBack {
         val scope: CoroutineScope
-        fun refreshData()
         fun scrollTo(pos: Int)
         fun openExplore(sourceUrl: String, title: String, exploreUrl: String?)
         fun editSource(sourceUrl: String)
         fun toTop(source: BookSource)
+        fun deleteSource(source: BookSource)
     }
 }

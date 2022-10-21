@@ -2,15 +2,11 @@ package io.legado.app.ui.association
 
 import android.app.Application
 import android.net.Uri
-import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.MutableLiveData
+import io.legado.app.constant.AppLog
 import io.legado.app.constant.AppPattern.bookFileRegex
-import io.legado.app.exception.NoStackTraceException
 import io.legado.app.model.localBook.LocalBook
-import io.legado.app.utils.isJson
-import io.legado.app.utils.printOnDebug
-import io.legado.app.utils.readText
-import java.io.File
+import io.legado.app.utils.*
 
 class FileAssociationViewModel(application: Application) : BaseAssociationViewModel(application) {
     val importBookLiveData = MutableLiveData<Uri>()
@@ -22,35 +18,31 @@ class FileAssociationViewModel(application: Application) : BaseAssociationViewMo
     fun dispatchIndent(uri: Uri) {
         execute {
             lateinit var fileName: String
-            lateinit var content: String
             //如果是普通的url，需要根据返回的内容判断是什么
-            if (uri.scheme == "file" || uri.scheme == "content") {
-                if (uri.scheme == "file") {
-                    val file = File(uri.path.toString())
-                    content = file.readText()
-                    fileName = file.name
-                } else {
-                    val file = DocumentFile.fromSingleUri(context, uri)
-                    content = file?.readText(context) ?: throw NoStackTraceException("文件不存在")
-                    fileName = file.name ?: ""
+            if (uri.isContentScheme() || uri.isFileScheme()) {
+                val fileDoc = FileDoc.fromUri(uri, false)
+                fileName = fileDoc.name
+                kotlin.runCatching {
+                    if (uri.inputStream(context).getOrNull().isJson()) {
+                        importJson(uri)
+                        return@execute
+                    }
+                }.onFailure {
+                    it.printOnDebug()
+                    AppLog.put("尝试导入为JSON文件失败\n${it.localizedMessage}", it)
                 }
-                when {
-                    content.isJson() -> {
-                        importJson(content)
-                    }
-                    fileName.matches(bookFileRegex) -> {
-                        importBookLiveData.postValue(uri)
-                    }
-                    else -> {
-                        notSupportedLiveData.postValue(Pair(uri, fileName))
-                    }
+                if (fileName.matches(bookFileRegex)) {
+                    importBookLiveData.postValue(uri)
+                    return@execute
                 }
+                notSupportedLiveData.postValue(Pair(uri, fileName))
             } else {
                 onLineImportLive.postValue(uri)
             }
         }.onError {
             it.printOnDebug()
             errorLive.postValue(it.localizedMessage)
+            AppLog.put("无法打开文件\n${it.localizedMessage}", it)
         }
     }
 

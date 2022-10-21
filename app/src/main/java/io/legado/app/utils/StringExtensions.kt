@@ -2,10 +2,12 @@
 
 package io.legado.app.utils
 
-import io.legado.app.constant.AppPattern.dataUriRegex
 import android.icu.text.Collator
 import android.icu.util.ULocale
 import android.net.Uri
+import android.text.Editable
+import cn.hutool.core.lang.Validator
+import io.legado.app.constant.AppPattern.dataUriRegex
 import java.io.File
 import java.util.*
 
@@ -13,12 +15,17 @@ fun String?.safeTrim() = if (this.isNullOrBlank()) null else this.trim()
 
 fun String?.isContentScheme(): Boolean = this?.startsWith("content://") == true
 
+fun String.toEditable(): Editable = Editable.Factory.getInstance().newEditable(this)
+
 fun String.parseToUri(): Uri {
-    return if (isContentScheme()) {
-        Uri.parse(this)
-    } else {
+    return if (isUri()) Uri.parse(this) else {
         Uri.fromFile(File(this))
     }
+}
+
+fun String?.isUri(): Boolean {
+    this ?: return false
+    return this.startsWith("file://", true) || isContentScheme()
 }
 
 fun String?.isAbsUrl() =

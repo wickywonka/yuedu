@@ -3,6 +3,8 @@ package io.legado.app.help.config
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.core.content.edit
+import io.legado.app.utils.getBoolean
+import io.legado.app.utils.putBoolean
 import io.legado.app.utils.putLong
 import splitties.init.appCtx
 
@@ -14,6 +16,12 @@ object LocalConfig :
         get() = getLong("lastBackup", 0)
         set(value) {
             putLong("lastBackup", value)
+        }
+
+    var privacyPolicyOk: Boolean
+        get() = getBoolean("privacyPolicyOk")
+        set(value) {
+            putBoolean("privacyPolicyOk", value)
         }
 
     val readHelpVersionIsLast: Boolean
@@ -28,6 +36,9 @@ object LocalConfig :
     val bookSourcesHelpVersionIsLast: Boolean
         get() = isLastVersion(1, "bookSourceHelpVersion", "firstOpenBookSources")
 
+    val webDavBookHelpVersionIsLast: Boolean
+        get() = isLastVersion(1, "webDavBookHelpVersion", "firstOpenWebDavBook")
+
     val ruleHelpVersionIsLast: Boolean
         get() = isLastVersion(1, "ruleHelpVersion")
 
@@ -35,7 +46,7 @@ object LocalConfig :
         get() = !isLastVersion(5, "httpTtsVersion")
 
     val needUpTxtTocRule: Boolean
-        get() = !isLastVersion(1, "txtTocRuleVersion")
+        get() = !isLastVersion(2, "txtTocRuleVersion")
 
     val needUpRssSources: Boolean
         get() = !isLastVersion(4, "rssSourceVersion")

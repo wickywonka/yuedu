@@ -9,13 +9,15 @@ import android.view.*
 import android.webkit.*
 import androidx.activity.viewModels
 import androidx.core.view.size
-import androidx.webkit.WebSettingsCompat
-import androidx.webkit.WebViewFeature
 import io.legado.app.R
 import io.legado.app.base.VMBaseActivity
+import io.legado.app.constant.AppConst
+import io.legado.app.constant.AppConst.imagePathKey
 import io.legado.app.databinding.ActivityRssReadBinding
 import io.legado.app.help.config.AppConfig
 import io.legado.app.lib.dialogs.SelectItem
+import io.legado.app.lib.dialogs.selector
+import io.legado.app.lib.theme.accentColor
 import io.legado.app.lib.theme.primaryTextColor
 import io.legado.app.model.Download
 import io.legado.app.ui.association.OnLineImportActivity
@@ -36,15 +38,13 @@ class ReadRssActivity : VMBaseActivity<ActivityRssReadBinding, ReadRssViewModel>
 
     override val binding by viewBinding(ActivityRssReadBinding::inflate)
     override val viewModel by viewModels<ReadRssViewModel>()
-    private val imagePathKey = "imagePath"
     private var starMenuItem: MenuItem? = null
     private var ttsMenuItem: MenuItem? = null
     private var customWebViewCallback: WebChromeClient.CustomViewCallback? = null
-    private var webPic: String? = null
-    private val saveImage = registerForActivityResult(HandleFileContract()) {
+    private val selectImageDir = registerForActivityResult(HandleFileContract()) {
         it.uri?.let { uri ->
-            ACache.get(this).put(imagePathKey, uri.toString())
-            viewModel.saveImage(webPic, uri)
+            ACache.get().put(imagePathKey, uri.toString())
+            viewModel.saveImage(it.value, uri)
         }
     }
 
@@ -77,9 +77,9 @@ class ReadRssActivity : VMBaseActivity<ActivityRssReadBinding, ReadRssViewModel>
         return super.onCompatCreateOptionsMenu(menu)
     }
 
-    override fun onPrepareOptionsMenu(menu: Menu?): Boolean {
-        starMenuItem = menu?.findItem(R.id.menu_rss_star)
-        ttsMenuItem = menu?.findItem(R.id.menu_aloud)
+    override fun onPrepareOptionsMenu(menu: Menu): Boolean {
+        starMenuItem = menu.findItem(R.id.menu_rss_star)
+        ttsMenuItem = menu.findItem(R.id.menu_aloud)
         upStarMenu()
         return super.onPrepareOptionsMenu(menu)
     }
@@ -117,6 +117,7 @@ class ReadRssActivity : VMBaseActivity<ActivityRssReadBinding, ReadRssViewModel>
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun initWebView() {
+        binding.progressBar.fontColor = accentColor
         binding.webView.webChromeClient = CustomWebChromeClient()
         binding.webView.webViewClient = CustomWebViewClient()
         binding.webView.settings.apply {
@@ -124,16 +125,26 @@ class ReadRssActivity : VMBaseActivity<ActivityRssReadBinding, ReadRssViewModel>
             domStorageEnabled = true
             allowContentAccess = true
             builtInZoomControls = true
+            setDarkeningAllowed(AppConfig.isNightTheme)
         }
         binding.webView.addJavascriptInterface(this, "app")
-        upWebViewTheme()
         binding.webView.setOnLongClickListener {
             val hitTestResult = binding.webView.hitTestResult
             if (hitTestResult.type == WebView.HitTestResult.IMAGE_TYPE ||
                 hitTestResult.type == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE
             ) {
-                hitTestResult.extra?.let {
-                    saveImage(it)
+                hitTestResult.extra?.let { webPic ->
+                    selector(
+                        arrayListOf(
+                            SelectItem(getString(R.string.action_save), "save"),
+                            SelectItem(getString(R.string.select_folder), "selectFolder")
+                        )
+                    ) { _, charSequence, _ ->
+                        when (charSequence.value) {
+                            "save" -> saveImage(webPic)
+                            "selectFolder" -> selectSaveFolder(null)
+                        }
+                    }
                     return@setOnLongClickListener true
                 }
             }
@@ -150,23 +161,23 @@ class ReadRssActivity : VMBaseActivity<ActivityRssReadBinding, ReadRssViewModel>
     }
 
     private fun saveImage(webPic: String) {
-        this.webPic = webPic
-        val path = ACache.get(this@ReadRssActivity).getAsString(imagePathKey)
+        val path = ACache.get().getAsString(imagePathKey)
         if (path.isNullOrEmpty()) {
-            selectSaveFolder()
+            selectSaveFolder(webPic)
         } else {
             viewModel.saveImage(webPic, Uri.parse(path))
         }
     }
 
-    private fun selectSaveFolder() {
+    private fun selectSaveFolder(webPic: String?) {
         val default = arrayListOf<SelectItem<Int>>()
-        val path = ACache.get(this@ReadRssActivity).getAsString(imagePathKey)
+        val path = ACache.get().getAsString(imagePathKey)
         if (!path.isNullOrEmpty()) {
             default.add(SelectItem(path, -1))
         }
-        saveImage.launch {
+        selectImageDir.launch {
             otherActions = default
+            value = webPic
         }
     }
 
@@ -177,6 +188,9 @@ class ReadRssActivity : VMBaseActivity<ActivityRssReadBinding, ReadRssViewModel>
                 upJavaScriptEnable()
                 val url = NetworkUtils.getAbsoluteURL(it.origin, it.link)
                 val html = viewModel.clHtml(content)
+                binding.webView.settings.userAgentString =
+                    viewModel.rssSource?.getHeaderMap()?.get(AppConst.UA_NAME, true)
+                        ?: AppConfig.userAgent
                 if (viewModel.rssSource?.loadWithBaseUrl == true) {
                     binding.webView
                         .loadDataWithBaseURL(url, html, "text/html", "utf-8", url)//不想用baseUrl进else
@@ -188,6 +202,7 @@ class ReadRssActivity : VMBaseActivity<ActivityRssReadBinding, ReadRssViewModel>
         }
         viewModel.urlLiveData.observe(this) {
             upJavaScriptEnable()
+            binding.webView.settings.userAgentString = it.getUserAgent()
             binding.webView.loadUrl(it.url, it.headerMap)
         }
     }
@@ -196,23 +211,6 @@ class ReadRssActivity : VMBaseActivity<ActivityRssReadBinding, ReadRssViewModel>
     private fun upJavaScriptEnable() {
         if (viewModel.rssSource?.enableJs == true) {
             binding.webView.settings.javaScriptEnabled = true
-        }
-    }
-
-    private fun upWebViewTheme() {
-        if (AppConfig.isNightTheme) {
-            if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK_STRATEGY)) {
-                WebSettingsCompat.setForceDarkStrategy(
-                    binding.webView.settings,
-                    WebSettingsCompat.DARK_STRATEGY_PREFER_WEB_THEME_OVER_USER_AGENT_DARKENING
-                )
-            }
-            if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
-                WebSettingsCompat.setForceDark(
-                    binding.webView.settings,
-                    WebSettingsCompat.FORCE_DARK_ON
-                )
-            }
         }
     }
 
@@ -269,16 +267,15 @@ class ReadRssActivity : VMBaseActivity<ActivityRssReadBinding, ReadRssViewModel>
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun readAloud() {
-        if (viewModel.textToSpeech?.isSpeaking == true) {
-            viewModel.textToSpeech?.stop()
+        if (viewModel.tts?.isSpeaking == true) {
+            viewModel.tts?.stop()
             upTtsMenu(false)
         } else {
             binding.webView.settings.javaScriptEnabled = true
             binding.webView.evaluateJavascript("document.documentElement.outerHTML") {
                 val html = StringEscapeUtils.unescapeJson(it)
                     .replace("^\"|\"$".toRegex(), "")
-                Jsoup.parse(html).text()
-                viewModel.readAloud(Jsoup.parse(html).textArray())
+                viewModel.readAloud(Jsoup.parse(html).textArray().joinToString("\n"))
             }
         }
     }
@@ -289,6 +286,12 @@ class ReadRssActivity : VMBaseActivity<ActivityRssReadBinding, ReadRssViewModel>
     }
 
     inner class CustomWebChromeClient : WebChromeClient() {
+
+        override fun onProgressChanged(view: WebView?, newProgress: Int) {
+            super.onProgressChanged(view, newProgress)
+            binding.progressBar.setDurProgress(newProgress)
+            binding.progressBar.gone(newProgress == 100)
+        }
 
         override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR
@@ -315,7 +318,7 @@ class ReadRssActivity : VMBaseActivity<ActivityRssReadBinding, ReadRssViewModel>
             return true
         }
 
-        @Suppress("DEPRECATION")
+        @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION", "KotlinRedundantDiagnosticSuppress")
         override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
             url?.let {
                 return shouldOverrideUrlLoading(Uri.parse(it))

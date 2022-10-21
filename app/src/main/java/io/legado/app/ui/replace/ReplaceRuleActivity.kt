@@ -15,13 +15,12 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import io.legado.app.R
 import io.legado.app.base.VMBaseActivity
 import io.legado.app.constant.AppLog
-import io.legado.app.constant.AppPattern
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.ReplaceRule
 import io.legado.app.databinding.ActivityReplaceRuleBinding
 import io.legado.app.databinding.DialogEditTextBinding
-import io.legado.app.help.ContentProcessor
 import io.legado.app.help.DirectLinkUpload
+import io.legado.app.help.book.ContentProcessor
 import io.legado.app.help.coroutine.Coroutine
 import io.legado.app.lib.dialogs.alert
 import io.legado.app.lib.theme.primaryColor
@@ -118,8 +117,8 @@ class ReplaceRuleActivity : VMBaseActivity<ActivityReplaceRuleBinding, ReplaceRu
         return super.onCompatCreateOptionsMenu(menu)
     }
 
-    override fun onPrepareOptionsMenu(menu: Menu?): Boolean {
-        groupMenu = menu?.findItem(R.id.menu_group)?.subMenu
+    override fun onPrepareOptionsMenu(menu: Menu): Boolean {
+        groupMenu = menu.findItem(R.id.menu_group)?.subMenu
         upGroupMenu()
         return super.onPrepareOptionsMenu(menu)
     }
@@ -162,7 +161,10 @@ class ReplaceRuleActivity : VMBaseActivity<ActivityReplaceRuleBinding, ReplaceRu
     }
 
     override fun onClickSelectBarMainAction() {
-        delSourceDialog()
+        alert(titleResource = R.string.draw, messageResource = R.string.sure_del) {
+            yesButton { viewModel.delSelection(adapter.selection) }
+            noButton()
+        }
     }
 
     private fun initSelectActionView() {
@@ -170,13 +172,6 @@ class ReplaceRuleActivity : VMBaseActivity<ActivityReplaceRuleBinding, ReplaceRu
         binding.selectActionBar.inflateMenu(R.menu.replace_rule_sel)
         binding.selectActionBar.setOnMenuItemClickListener(this)
         binding.selectActionBar.setCallBack(this)
-    }
-
-    private fun delSourceDialog() {
-        alert(titleResource = R.string.draw, messageResource = R.string.sure_del) {
-            okButton { viewModel.delSelection(adapter.selection) }
-            noButton()
-        }
     }
 
     private fun observeReplaceRuleData(searchKey: String? = null) {
@@ -209,11 +204,9 @@ class ReplaceRuleActivity : VMBaseActivity<ActivityReplaceRuleBinding, ReplaceRu
 
     private fun observeGroupData() {
         launch {
-            appDb.replaceRuleDao.flowGroup().collect {
+            appDb.replaceRuleDao.flowGroups().collect {
                 groups.clear()
-                it.map { group ->
-                    groups.addAll(group.splitNotBlank(AppPattern.splitGroupRegex))
-                }
+                groups.addAll(it)
                 upGroupMenu()
             }
         }
@@ -266,7 +259,7 @@ class ReplaceRuleActivity : VMBaseActivity<ActivityReplaceRuleBinding, ReplaceRu
 
     @SuppressLint("InflateParams")
     private fun showImportDialog() {
-        val aCache = ACache.get(this, cacheDir = false)
+        val aCache = ACache.get(cacheDir = false)
         val cacheUrls: MutableList<String> = aCache
             .getAsString(importRecordKey)
             ?.splitNotBlank(",")
@@ -329,8 +322,14 @@ class ReplaceRuleActivity : VMBaseActivity<ActivityReplaceRuleBinding, ReplaceRu
     }
 
     override fun delete(rule: ReplaceRule) {
-        setResult(RESULT_OK)
-        viewModel.delete(rule)
+        alert(R.string.draw) {
+            setMessage(getString(R.string.sure_del) + "\n" + rule.name)
+            noButton()
+            yesButton {
+                setResult(RESULT_OK)
+                viewModel.delete(rule)
+            }
+        }
     }
 
     override fun edit(rule: ReplaceRule) {

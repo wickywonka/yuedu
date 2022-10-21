@@ -18,14 +18,19 @@ import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.exception.NoStackTraceException
-import io.legado.app.help.BookHelp
-import io.legado.app.help.ContentProcessor
+import io.legado.app.help.AppWebDav
+import io.legado.app.help.book.BookHelp
+import io.legado.app.help.book.ContentProcessor
+import io.legado.app.help.book.isLocal
 import io.legado.app.help.config.AppConfig
-import io.legado.app.help.storage.AppWebDav
+import io.legado.app.help.coroutine.Coroutine
+import io.legado.app.help.coroutine.OrderCoroutine
 import io.legado.app.utils.*
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import me.ag2s.epublib.domain.*
+import me.ag2s.epublib.domain.Date
 import me.ag2s.epublib.epub.EpubWriter
 import me.ag2s.epublib.util.ResourceUtil
 import splitties.init.appCtx
@@ -33,13 +38,44 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.charset.Charset
+import java.nio.file.*
+import java.util.*
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.coroutines.coroutineContext
 
 
 class CacheViewModel(application: Application) : BaseViewModel(application) {
     val upAdapterLiveData = MutableLiveData<String>()
     val exportProgress = ConcurrentHashMap<String, Int>()
     val exportMsg = ConcurrentHashMap<String, String>()
+    private val mutex = Mutex()
+    val cacheChapters = hashMapOf<String, HashSet<String>>()
+    var loadChapterCoroutine: Coroutine<Unit>? = null
+
+    @Volatile
+    private var exportNumber = 0
+
+    fun loadCacheFiles(books: List<Book>) {
+        loadChapterCoroutine?.cancel()
+        loadChapterCoroutine = execute {
+            books.forEach { book ->
+                if (!book.isLocal && !cacheChapters.contains(book.bookUrl)) {
+                    val chapterCaches = hashSetOf<String>()
+                    val cacheNames = BookHelp.getChapterFiles(book)
+                    if (cacheNames.isNotEmpty()) {
+                        appDb.bookChapterDao.getChapterList(book.bookUrl).forEach { chapter ->
+                            if (cacheNames.contains(chapter.getFileName())) {
+                                chapterCaches.add(chapter.url)
+                            }
+                        }
+                    }
+                    cacheChapters[book.bookUrl] = chapterCaches
+                    upAdapterLiveData.postValue(book.bookUrl)
+                }
+                ensureActive()
+            }
+        }
+    }
 
     private fun getExportFileName(book: Book): String {
         val jsStr = AppConfig.bookExportFileName
@@ -49,7 +85,11 @@ class CacheViewModel(application: Application) : BaseViewModel(application) {
         val bindings = SimpleBindings()
         bindings["name"] = book.name
         bindings["author"] = book.getRealAuthor()
-        return AppConst.SCRIPT_ENGINE.eval(jsStr, bindings).toString()
+        return kotlin.runCatching {
+            AppConst.SCRIPT_ENGINE.eval(jsStr, bindings).toString()
+        }.onFailure {
+            context.toastOnUi("书名规则错误\n${it.localizedMessage}")
+        }.getOrDefault("${book.name} 作者：${book.getRealAuthor()}")
     }
 
     fun export(path: String, book: Book) {
@@ -58,13 +98,19 @@ class CacheViewModel(application: Application) : BaseViewModel(application) {
         exportMsg.remove(book.bookUrl)
         upAdapterLiveData.postValue(book.bookUrl)
         execute {
+            mutex.withLock {
+                while (exportNumber > 0) {
+                    delay(1000)
+                }
+                exportNumber++
+            }
             if (path.isContentScheme()) {
                 val uri = Uri.parse(path)
                 val doc = DocumentFile.fromTreeUri(context, uri)
                     ?: throw NoStackTraceException("获取导出文档失败")
-                export(this, doc, book)
+                export(doc, book)
             } else {
-                export(this, FileUtils.createFolderIfNotExist(path), book)
+                export(FileUtils.createFolderIfNotExist(path), book)
             }
         }.onError {
             exportProgress.remove(book.bookUrl)
@@ -75,20 +121,35 @@ class CacheViewModel(application: Application) : BaseViewModel(application) {
             exportProgress.remove(book.bookUrl)
             exportMsg[book.bookUrl] = context.getString(R.string.export_success)
             upAdapterLiveData.postValue(book.bookUrl)
+        }.onFinally {
+            exportNumber--
         }
     }
 
     @Suppress("BlockingMethodInNonBlockingContext")
-    private suspend fun export(scope: CoroutineScope, doc: DocumentFile, book: Book) {
+    private suspend fun export(doc: DocumentFile, book: Book) {
         val filename = "${getExportFileName(book)}.txt"
         DocumentUtils.delete(doc, filename)
         val bookDoc = DocumentUtils.createFileIfNotExist(doc, filename)
-            ?: throw NoStackTraceException("创建文档失败")
+            ?: throw NoStackTraceException("创建文档失败，请尝试重新设置导出文件夹")
         val stringBuilder = StringBuilder()
+        val exportToWebDav = AppConfig.exportToWebDav
         context.contentResolver.openOutputStream(bookDoc.uri, "wa")?.use { bookOs ->
-            getAllContents(scope, book) { text ->
+            getAllContents(book) { text, srcList ->
                 bookOs.write(text.toByteArray(Charset.forName(AppConfig.exportCharset)))
-                stringBuilder.append(text)
+                if (exportToWebDav) {
+                    stringBuilder.append(text)
+                }
+                srcList?.forEach {
+                    val vFile = BookHelp.getImage(book, it.third)
+                    if (vFile.exists()) {
+                        DocumentUtils.createFileIfNotExist(
+                            doc,
+                            "${it.second}-${MD5Utils.md5Encode16(it.third)}.jpg",
+                            subDirs = arrayOf("${book.name}_${book.author}", "images", it.first)
+                        )?.writeBytes(context, vFile.readBytes())
+                    }
+                }
             }
         }
         if (AppConfig.exportToWebDav) {
@@ -99,14 +160,29 @@ class CacheViewModel(application: Application) : BaseViewModel(application) {
         }
     }
 
-    private suspend fun export(scope: CoroutineScope, file: File, book: Book) {
+    private suspend fun export(file: File, book: Book) {
         val filename = "${getExportFileName(book)}.txt"
         val bookPath = FileUtils.getPath(file, filename)
         val bookFile = FileUtils.createFileWithReplace(bookPath)
         val stringBuilder = StringBuilder()
-        getAllContents(scope, book) { text ->
+        val exportToWebDav = AppConfig.exportToWebDav
+        getAllContents(book) { text, srcList ->
             bookFile.appendText(text, Charset.forName(AppConfig.exportCharset))
-            stringBuilder.append(text)
+            if (exportToWebDav) {
+                stringBuilder.append(text)
+            }
+            srcList?.forEach {
+                val vFile = BookHelp.getImage(book, it.third)
+                if (vFile.exists()) {
+                    FileUtils.createFileIfNotExist(
+                        file,
+                        "${book.name}_${book.author}",
+                        "images",
+                        it.first,
+                        "${it.second}-${MD5Utils.md5Encode16(it.third)}.jpg"
+                    ).writeBytes(vFile.readBytes())
+                }
+            }
         }
         if (AppConfig.exportToWebDav) {
             val byteArray =
@@ -116,9 +192,8 @@ class CacheViewModel(application: Application) : BaseViewModel(application) {
     }
 
     private suspend fun getAllContents(
-        scope: CoroutineScope,
         book: Book,
-        append: (text: String) -> Unit
+        append: (text: String, srcList: ArrayList<Triple<String, Int, String>>?) -> Unit
     ) {
         val useReplace = AppConfig.exportUseReplace && book.getUseReplaceRule()
         val contentProcessor = ContentProcessor.get(book.name, book.origin)
@@ -130,23 +205,62 @@ class CacheViewModel(application: Application) : BaseViewModel(application) {
                 "\n" + HtmlFormatter.format(book.getDisplayIntro())
             )
         }"
-        append(qy)
-        appDb.bookChapterDao.getChapterList(book.bookUrl).forEachIndexed { index, chapter ->
-            scope.ensureActive()
-            upAdapterLiveData.postValue(book.bookUrl)
-            exportProgress[book.bookUrl] = index
-            BookHelp.getContent(book, chapter).let { content ->
-                val content1 = contentProcessor
-                    .getContent(
-                        book,
-                        chapter,
-                        content ?: "null",
-                        includeTitle = !AppConfig.exportNoChapterName,
-                        useReplace = useReplace,
-                        chineseConvert = false,
-                        reSegment = false
-                    ).joinToString("\n")
-                append.invoke("\n\n$content1")
+        append(qy, null)
+        if (AppConfig.parallelExportBook) {
+            val oc =
+                OrderCoroutine<Pair<String, ArrayList<Triple<String, Int, String>>?>>(AppConfig.threadCount)
+            appDb.bookChapterDao.getChapterList(book.bookUrl).forEach { chapter ->
+                oc.submit { getExportData(book, chapter, contentProcessor, useReplace) }
+            }
+            oc.collect { index, result ->
+                upAdapterLiveData.postValue(book.bookUrl)
+                exportProgress[book.bookUrl] = index
+                append.invoke(result.first, result.second)
+            }
+        } else {
+            appDb.bookChapterDao.getChapterList(book.bookUrl).forEachIndexed { index, chapter ->
+                coroutineContext.ensureActive()
+                upAdapterLiveData.postValue(book.bookUrl)
+                exportProgress[book.bookUrl] = index
+                val result = getExportData(book, chapter, contentProcessor, useReplace)
+                append.invoke(result.first, result.second)
+            }
+        }
+
+    }
+
+    private suspend fun getExportData(
+        book: Book,
+        chapter: BookChapter,
+        contentProcessor: ContentProcessor,
+        useReplace: Boolean
+    ): Pair<String, ArrayList<Triple<String, Int, String>>?> {
+        BookHelp.getContent(book, chapter).let { content ->
+            val content1 = contentProcessor
+                .getContent(
+                    book,
+                    chapter,
+                    content ?: "null",
+                    includeTitle = !AppConfig.exportNoChapterName,
+                    useReplace = useReplace,
+                    chineseConvert = false,
+                    reSegment = false
+                ).joinToString("\n")
+            if (AppConfig.exportPictureFile) {
+                //txt导出图片文件
+                val srcList = arrayListOf<Triple<String, Int, String>>()
+                content?.split("\n")?.forEachIndexed { index, text ->
+                    val matcher = AppPattern.imgPattern.matcher(text)
+                    while (matcher.find()) {
+                        matcher.group(1)?.let {
+                            val src = NetworkUtils.getAbsoluteURL(chapter.url, it)
+                            srcList.add(Triple(chapter.title, index, src))
+                        }
+                    }
+                }
+                return Pair("\n\n$content1", srcList)
+            } else {
+                return Pair("\n\n$content1", null)
             }
         }
     }
@@ -161,13 +275,19 @@ class CacheViewModel(application: Application) : BaseViewModel(application) {
         exportMsg.remove(book.bookUrl)
         upAdapterLiveData.postValue(book.bookUrl)
         execute {
+            mutex.withLock {
+                while (exportNumber > 0) {
+                    delay(1000)
+                }
+                exportNumber++
+            }
             if (path.isContentScheme()) {
                 val uri = Uri.parse(path)
                 val doc = DocumentFile.fromTreeUri(context, uri)
                     ?: throw NoStackTraceException("获取导出文档失败")
-                exportEpub(this, doc, book)
+                exportEpub(doc, book)
             } else {
-                exportEpub(this, FileUtils.createFolderIfNotExist(path), book)
+                exportEpub(FileUtils.createFolderIfNotExist(path), book)
             }
         }.onError {
             exportProgress.remove(book.bookUrl)
@@ -178,11 +298,13 @@ class CacheViewModel(application: Application) : BaseViewModel(application) {
             exportProgress.remove(book.bookUrl)
             exportMsg[book.bookUrl] = context.getString(R.string.export_success)
             upAdapterLiveData.postValue(book.bookUrl)
+        }.onFinally {
+            exportNumber--
         }
     }
 
     @Suppress("BlockingMethodInNonBlockingContext")
-    private suspend fun exportEpub(scope: CoroutineScope, doc: DocumentFile, book: Book) {
+    private suspend fun exportEpub(doc: DocumentFile, book: Book) {
         val filename = "${getExportFileName(book)}.epub"
         DocumentUtils.delete(doc, filename)
         val epubBook = EpubBook()
@@ -195,7 +317,7 @@ class CacheViewModel(application: Application) : BaseViewModel(application) {
         val contentModel = setAssets(doc, book, epubBook)
 
         //设置正文
-        setEpubContent(scope, contentModel, book, epubBook)
+        setEpubContent(contentModel, book, epubBook)
         DocumentUtils.createFileIfNotExist(doc, filename)?.let { bookDoc ->
             context.contentResolver.openOutputStream(bookDoc.uri, "wa")?.use { bookOs ->
                 EpubWriter().write(epubBook, bookOs)
@@ -205,7 +327,7 @@ class CacheViewModel(application: Application) : BaseViewModel(application) {
     }
 
 
-    private suspend fun exportEpub(scope: CoroutineScope, file: File, book: Book) {
+    private suspend fun exportEpub(file: File, book: Book) {
         val filename = "${getExportFileName(book)}.epub"
         val epubBook = EpubBook()
         epubBook.version = "2.0"
@@ -219,7 +341,7 @@ class CacheViewModel(application: Application) : BaseViewModel(application) {
         val bookPath = FileUtils.getPath(file, filename)
         val bookFile = FileUtils.createFileWithReplace(bookPath)
         //设置正文
-        setEpubContent(scope, contentModel, book, epubBook)
+        setEpubContent(contentModel, book, epubBook)
         @Suppress("BlockingMethodInNonBlockingContext")
         EpubWriter().write(epubBook, FileOutputStream(bookFile))
     }
@@ -359,7 +481,10 @@ class CacheViewModel(application: Application) : BaseViewModel(application) {
             .asBitmap()
             .load(book.getDisplayCover())
             .into(object : CustomTarget<Bitmap>() {
-                override fun onResourceReady(resource: Bitmap, transition: Transition<in Bitmap>?) {
+                override fun onResourceReady(
+                    resource: Bitmap,
+                    transition: Transition<in Bitmap>?
+                ) {
                     val stream = ByteArrayOutputStream()
                     resource.compress(Bitmap.CompressFormat.JPEG, 100, stream)
                     val byteArray: ByteArray = stream.toByteArray()
@@ -374,7 +499,6 @@ class CacheViewModel(application: Application) : BaseViewModel(application) {
     }
 
     private suspend fun setEpubContent(
-        scope: CoroutineScope,
         contentModel: String,
         book: Book,
         epubBook: EpubBook
@@ -383,7 +507,7 @@ class CacheViewModel(application: Application) : BaseViewModel(application) {
         val useReplace = AppConfig.exportUseReplace && book.getUseReplaceRule()
         val contentProcessor = ContentProcessor.get(book.name, book.origin)
         appDb.bookChapterDao.getChapterList(book.bookUrl).forEachIndexed { index, chapter ->
-            scope.ensureActive()
+            coroutineContext.ensureActive()
             upAdapterLiveData.postValue(book.bookUrl)
             exportProgress[book.bookUrl] = index
             BookHelp.getContent(book, chapter).let { content ->
@@ -429,8 +553,10 @@ class CacheViewModel(application: Application) : BaseViewModel(application) {
             while (matcher.find()) {
                 matcher.group(1)?.let {
                     val src = NetworkUtils.getAbsoluteURL(chapter.url, it)
-                    val originalHref = "${MD5Utils.md5Encode16(src)}.${BookHelp.getImageSuffix(src)}"
-                    val href = "Images/${MD5Utils.md5Encode16(src)}.${BookHelp.getImageSuffix(src)}"
+                    val originalHref =
+                        "${MD5Utils.md5Encode16(src)}.${BookHelp.getImageSuffix(src)}"
+                    val href =
+                        "Images/${MD5Utils.md5Encode16(src)}.${BookHelp.getImageSuffix(src)}"
                     val vFile = BookHelp.getImage(book, src)
                     val fp = FileResourceProvider(vFile.parent)
                     if (vFile.exists()) {

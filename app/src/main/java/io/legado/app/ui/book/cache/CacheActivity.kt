@@ -10,16 +10,14 @@ import io.legado.app.R
 import io.legado.app.base.VMBaseActivity
 import io.legado.app.constant.AppConst
 import io.legado.app.constant.AppConst.charsets
-import io.legado.app.constant.BookType
 import io.legado.app.constant.EventBus
-import io.legado.app.constant.PreferKey
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookGroup
 import io.legado.app.databinding.ActivityCacheBookBinding
 import io.legado.app.databinding.DialogEditTextBinding
-import io.legado.app.help.BookHelp
+import io.legado.app.help.book.isAudio
 import io.legado.app.help.config.AppConfig
 import io.legado.app.lib.dialogs.SelectItem
 import io.legado.app.lib.dialogs.alert
@@ -29,11 +27,9 @@ import io.legado.app.ui.about.AppLogDialog
 import io.legado.app.ui.document.HandleFileContract
 import io.legado.app.utils.*
 import io.legado.app.utils.viewbindingdelegate.viewBinding
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Dispatchers.IO
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.flow.conflate
-import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -45,6 +41,7 @@ class CacheActivity : VMBaseActivity<ActivityCacheBookBinding, CacheViewModel>()
 
     private val exportBookPathKey = "exportBookPath"
     private val exportTypes = arrayListOf("txt", "epub")
+    private val layoutManager by lazy { LinearLayoutManager(this) }
     private val adapter by lazy { CacheAdapter(this, this) }
     private var booksFlowJob: Job? = null
     private var menu: Menu? = null
@@ -54,11 +51,11 @@ class CacheActivity : VMBaseActivity<ActivityCacheBookBinding, CacheViewModel>()
     private val exportDir = registerForActivityResult(HandleFileContract()) { result ->
         result.uri?.let { uri ->
             if (uri.isContentScheme()) {
-                ACache.get(this@CacheActivity).put(exportBookPathKey, uri.toString())
+                ACache.get().put(exportBookPathKey, uri.toString())
                 startExport(uri.toString(), result.requestCode)
             } else {
                 uri.path?.let { path ->
-                    ACache.get(this@CacheActivity).put(exportBookPathKey, path)
+                    ACache.get().put(exportBookPathKey, path)
                     startExport(path, result.requestCode)
                 }
             }
@@ -83,7 +80,7 @@ class CacheActivity : VMBaseActivity<ActivityCacheBookBinding, CacheViewModel>()
         return super.onCompatCreateOptionsMenu(menu)
     }
 
-    override fun onPrepareOptionsMenu(menu: Menu?): Boolean {
+    override fun onPrepareOptionsMenu(menu: Menu): Boolean {
         this.menu = menu
         upMenu()
         return super.onPrepareOptionsMenu(menu)
@@ -93,6 +90,8 @@ class CacheActivity : VMBaseActivity<ActivityCacheBookBinding, CacheViewModel>()
         menu.findItem(R.id.menu_enable_replace)?.isChecked = AppConfig.exportUseReplace
         menu.findItem(R.id.menu_export_no_chapter_name)?.isChecked = AppConfig.exportNoChapterName
         menu.findItem(R.id.menu_export_web_dav)?.isChecked = AppConfig.exportToWebDav
+        menu.findItem(R.id.menu_export_pics_file)?.isChecked = AppConfig.exportPictureFile
+        menu.findItem(R.id.menu_parallel_export)?.isChecked = AppConfig.parallelExportBook
         menu.findItem(R.id.menu_export_type)?.title =
             "${getString(R.string.export_type)}(${getTypeName()})"
         menu.findItem(R.id.menu_export_charset)?.title =
@@ -129,6 +128,8 @@ class CacheActivity : VMBaseActivity<ActivityCacheBookBinding, CacheViewModel>()
             R.id.menu_enable_replace -> AppConfig.exportUseReplace = !item.isChecked
             R.id.menu_export_no_chapter_name -> AppConfig.exportNoChapterName = !item.isChecked
             R.id.menu_export_web_dav -> AppConfig.exportToWebDav = !item.isChecked
+            R.id.menu_export_pics_file -> AppConfig.exportPictureFile = !item.isChecked
+            R.id.menu_parallel_export -> AppConfig.parallelExportBook = !item.isChecked
             R.id.menu_export_folder -> {
                 selectExportFolder(-1)
             }
@@ -146,7 +147,7 @@ class CacheActivity : VMBaseActivity<ActivityCacheBookBinding, CacheViewModel>()
     }
 
     private fun initRecyclerView() {
-        binding.recyclerView.layoutManager = LinearLayoutManager(this)
+        binding.recyclerView.layoutManager = layoutManager
         binding.recyclerView.adapter = adapter
     }
 
@@ -157,13 +158,14 @@ class CacheActivity : VMBaseActivity<ActivityCacheBookBinding, CacheViewModel>()
                 AppConst.bookGroupAllId -> appDb.bookDao.flowAll()
                 AppConst.bookGroupLocalId -> appDb.bookDao.flowLocal()
                 AppConst.bookGroupAudioId -> appDb.bookDao.flowAudio()
-                AppConst.bookGroupNoneId -> appDb.bookDao.flowNoGroup()
+                AppConst.bookGroupNetNoneId -> appDb.bookDao.flowNetNoGroup()
+                AppConst.bookGroupLocalNoneId -> appDb.bookDao.flowLocalNoGroup()
                 else -> appDb.bookDao.flowByGroup(groupId)
             }.conflate().map { books ->
                 val booksDownload = books.filter {
-                    it.type == BookType.default || it.type == BookType.image
+                    !it.isAudio
                 }
-                when (getPrefInt(PreferKey.bookshelfSort)) {
+                when (AppConfig.bookshelfSort) {
                     1 -> booksDownload.sortedByDescending { it.latestChapterTime }
                     2 -> booksDownload.sortedWith { o1, o2 ->
                         o1.name.cnCompare(o2.name)
@@ -173,7 +175,7 @@ class CacheActivity : VMBaseActivity<ActivityCacheBookBinding, CacheViewModel>()
                 }
             }.conflate().collect { books ->
                 adapter.setItems(books)
-                initCacheSize(books)
+                viewModel.loadCacheFiles(books)
             }
         }
     }
@@ -190,19 +192,12 @@ class CacheActivity : VMBaseActivity<ActivityCacheBookBinding, CacheViewModel>()
         }
     }
 
-    private fun initCacheSize(books: List<Book>) {
-        launch(IO) {
-            books.forEach { book ->
-                val chapterCaches = hashSetOf<String>()
-                val cacheNames = BookHelp.getChapterFiles(book)
-                appDb.bookChapterDao.getChapterList(book.bookUrl).forEach { chapter ->
-                    if (cacheNames.contains(chapter.getFileName())) {
-                        chapterCaches.add(chapter.url)
-                    }
-                }
-                adapter.cacheChapters[book.bookUrl] = chapterCaches
-                withContext(Dispatchers.Main) {
-                    adapter.notifyItemRangeChanged(0, adapter.itemCount, true)
+    private fun notifyItemChanged(bookUrl: String) {
+        kotlin.runCatching {
+            adapter.getItems().forEachIndexed { index, book ->
+                if (bookUrl == book.bookUrl) {
+                    adapter.notifyItemChanged(index, true)
+                    return
                 }
             }
         }
@@ -210,11 +205,7 @@ class CacheActivity : VMBaseActivity<ActivityCacheBookBinding, CacheViewModel>()
 
     override fun observeLiveBus() {
         viewModel.upAdapterLiveData.observe(this) {
-            adapter.getItems().forEachIndexed { index, book ->
-                if (book.bookUrl == it) {
-                    adapter.notifyItemChanged(index, true)
-                }
-            }
+            notifyItemChanged(it)
         }
         observeEvent<String>(EventBus.UP_DOWNLOAD) {
             if (!CacheBook.isRun) {
@@ -230,15 +221,16 @@ class CacheActivity : VMBaseActivity<ActivityCacheBookBinding, CacheViewModel>()
                 }
                 menu?.applyTint(this)
             }
-            adapter.notifyItemRangeChanged(0, adapter.itemCount, true)
+            notifyItemChanged(it)
         }
-        observeEvent<BookChapter>(EventBus.SAVE_CONTENT) {
-            adapter.cacheChapters[it.bookUrl]?.add(it.url)
+        observeEvent<Pair<Book, BookChapter>>(EventBus.SAVE_CONTENT) { (book, chapter) ->
+            viewModel.cacheChapters[book.bookUrl]?.add(chapter.url)
+            notifyItemChanged(book.bookUrl)
         }
     }
 
     override fun export(position: Int) {
-        val path = ACache.get(this@CacheActivity).getAsString(exportBookPathKey)
+        val path = ACache.get().getAsString(exportBookPathKey)
         if (path.isNullOrEmpty()) {
             selectExportFolder(position)
         } else {
@@ -247,7 +239,7 @@ class CacheActivity : VMBaseActivity<ActivityCacheBookBinding, CacheViewModel>()
     }
 
     private fun exportAll() {
-        val path = ACache.get(this@CacheActivity).getAsString(exportBookPathKey)
+        val path = ACache.get().getAsString(exportBookPathKey)
         if (path.isNullOrEmpty()) {
             selectExportFolder(-10)
         } else {
@@ -257,7 +249,7 @@ class CacheActivity : VMBaseActivity<ActivityCacheBookBinding, CacheViewModel>()
 
     private fun selectExportFolder(exportPosition: Int) {
         val default = arrayListOf<SelectItem<Int>>()
-        val path = ACache.get(this@CacheActivity).getAsString(exportBookPathKey)
+        val path = ACache.get().getAsString(exportBookPathKey)
         if (!path.isNullOrEmpty()) {
             default.add(SelectItem(path, -1))
         }
@@ -331,6 +323,9 @@ class CacheActivity : VMBaseActivity<ActivityCacheBookBinding, CacheViewModel>()
             cancelButton()
         }
     }
+
+    override val cacheChapters: HashMap<String, HashSet<String>>
+        get() = viewModel.cacheChapters
 
     override fun exportProgress(bookUrl: String): Int? {
         return viewModel.exportProgress[bookUrl]

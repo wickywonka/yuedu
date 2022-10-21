@@ -3,6 +3,7 @@ package io.legado.app.ui.book.read.config
 import android.annotation.SuppressLint
 import android.content.DialogInterface
 import android.graphics.Color
+import android.graphics.PorterDuff
 import android.net.Uri
 import android.os.Bundle
 import android.view.Gravity
@@ -33,6 +34,7 @@ import io.legado.app.ui.document.HandleFileContract
 import io.legado.app.ui.widget.seekbar.SeekBarChangeListener
 import io.legado.app.utils.*
 import io.legado.app.utils.viewbindingdelegate.viewBinding
+import splitties.init.appCtx
 
 import java.io.File
 import java.io.FileOutputStream
@@ -105,12 +107,12 @@ class BgTextConfigDialog : BaseDialogFragment(R.layout.dialog_read_bg_text) {
         rootView.setBackgroundColor(bg)
         tvNameTitle.setTextColor(primaryTextColor)
         tvName.setTextColor(secondaryTextColor)
-        ivEdit.setColorFilter(secondaryTextColor)
+        ivEdit.setColorFilter(secondaryTextColor, PorterDuff.Mode.SRC_IN)
         tvRestore.setTextColor(primaryTextColor)
         swDarkStatusIcon.setTextColor(primaryTextColor)
-        ivImport.setColorFilter(primaryTextColor)
-        ivExport.setColorFilter(primaryTextColor)
-        ivDelete.setColorFilter(primaryTextColor)
+        ivImport.setColorFilter(primaryTextColor, PorterDuff.Mode.SRC_IN)
+        ivExport.setColorFilter(primaryTextColor, PorterDuff.Mode.SRC_IN)
+        ivDelete.setColorFilter(primaryTextColor, PorterDuff.Mode.SRC_IN)
         tvBgAlpha.setTextColor(primaryTextColor)
         tvBgImage.setTextColor(primaryTextColor)
         recyclerView.adapter = adapter
@@ -119,7 +121,7 @@ class BgTextConfigDialog : BaseDialogFragment(R.layout.dialog_read_bg_text) {
                 tvName.setTextColor(secondaryTextColor)
                 tvName.text = getString(R.string.select_image)
                 ivBg.setImageResource(R.drawable.ic_image)
-                ivBg.setColorFilter(primaryTextColor)
+                ivBg.setColorFilter(primaryTextColor, PorterDuff.Mode.SRC_IN)
                 root.setOnClickListener {
                     selectBgImage.launch()
                 }
@@ -160,7 +162,7 @@ class BgTextConfigDialog : BaseDialogFragment(R.layout.dialog_read_bg_text) {
             val layoutNames = defaultConfigs.map { it.name }
             context?.selector("选择预设布局", layoutNames) { _, i ->
                 if (i >= 0) {
-                    ReadBookConfig.durConfig = defaultConfigs[i]
+                    ReadBookConfig.durConfig = defaultConfigs[i].copy()
                     initData()
                     postEvent(EventBus.UP_CONFIG, true)
                 }
@@ -322,7 +324,7 @@ class BgTextConfigDialog : BaseDialogFragment(R.layout.dialog_read_bg_text) {
                 importConfig(it)
             }
         }.onError {
-            longToast(it.msg)
+            longToast(it.stackTraceStr)
         }
     }
 
@@ -352,14 +354,21 @@ class BgTextConfigDialog : BaseDialogFragment(R.layout.dialog_read_bg_text) {
 
     private fun setBgFromUri(uri: Uri) {
         readUri(uri) { fileDoc, inputStream ->
-            var file = requireContext().externalFiles
-            file = FileUtils.createFileIfNotExist(file, "bg", fileDoc.name)
-            FileOutputStream(file).use { outputStream ->
-                inputStream.copyTo(outputStream)
+            kotlin.runCatching {
+                var file = requireContext().externalFiles
+                val suffix = fileDoc.name.substringAfterLast(".")
+                val fileName = uri.inputStream(requireContext()).getOrThrow().use {
+                    MD5Utils.md5Encode(it) + ".$suffix"
+                }
+                file = FileUtils.createFileIfNotExist(file, "bg", fileName)
+                FileOutputStream(file).use { outputStream ->
+                    inputStream.copyTo(outputStream)
+                }
+                ReadBookConfig.durConfig.setCurBg(2, file.absolutePath)
+                postEvent(EventBus.UP_CONFIG, false)
+            }.onFailure {
+                appCtx.toastOnUi(it.localizedMessage)
             }
-            ReadBookConfig.durConfig.setCurBg(2, file.absolutePath)
-            ReadBookConfig.upBg()
-            postEvent(EventBus.UP_CONFIG, false)
         }
     }
 }

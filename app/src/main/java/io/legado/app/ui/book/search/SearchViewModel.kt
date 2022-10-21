@@ -7,6 +7,7 @@ import io.legado.app.base.BaseViewModel
 import io.legado.app.data.appDb
 import io.legado.app.data.entities.SearchBook
 import io.legado.app.data.entities.SearchKeyword
+import io.legado.app.help.config.AppConfig
 import io.legado.app.model.webBook.SearchModel
 import kotlinx.coroutines.Dispatchers.IO
 import kotlinx.coroutines.channels.awaitClose
@@ -14,37 +15,43 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flowOn
 
 class SearchViewModel(application: Application) : BaseViewModel(application) {
-    private val searchModel = SearchModel(viewModelScope)
+    val searchScope: SearchScope = SearchScope(AppConfig.searchScope)
+    private val searchModel = SearchModel(viewModelScope, object : SearchModel.CallBack {
+
+        override fun getSearchScope(): SearchScope {
+            return searchScope
+        }
+
+        override fun onSearchStart() {
+            isSearchLiveData.postValue(true)
+        }
+
+        override fun onSearchSuccess(searchBooks: ArrayList<SearchBook>) {
+            searchFlowCallBack?.invoke(searchBooks)
+        }
+
+        override fun onSearchFinish(isEmpty: Boolean) {
+            isSearchLiveData.postValue(false)
+            searchFinishCallback?.invoke(isEmpty)
+        }
+
+        override fun onSearchCancel() {
+            isSearchLiveData.postValue(false)
+        }
+    })
     var searchFinishCallback: ((isEmpty: Boolean) -> Unit)? = null
     var isSearchLiveData = MutableLiveData<Boolean>()
     var searchKey: String = ""
     private var searchID = 0L
-
+    private var searchFlowCallBack: ((searchBooks: ArrayList<SearchBook>) -> Unit)? = null
     val searchDataFlow = callbackFlow {
 
-        val callback = object : SearchModel.CallBack {
-            override fun onSearchStart() {
-                isSearchLiveData.postValue(true)
-            }
-
-            override fun onSearchSuccess(searchBooks: ArrayList<SearchBook>) {
-                trySend(ArrayList(searchBooks))
-            }
-
-            override fun onSearchFinish(isEmpty: Boolean) {
-                isSearchLiveData.postValue(false)
-                searchFinishCallback?.invoke(isEmpty)
-            }
-
-            override fun onSearchCancel() {
-                isSearchLiveData.postValue(false)
-            }
+        searchFlowCallBack = {
+            trySend(ArrayList(it))
         }
 
-        searchModel.registerCallback(callback)
-
         awaitClose {
-            searchModel.unRegisterCallback()
+            searchFlowCallBack = null
         }
     }.flowOn(IO)
 
@@ -77,6 +84,7 @@ class SearchViewModel(application: Application) : BaseViewModel(application) {
         execute {
             appDb.searchKeywordDao.get(key)?.let {
                 it.usage = it.usage + 1
+                it.lastUseTime = System.currentTimeMillis()
                 appDb.searchKeywordDao.update(it)
             } ?: appDb.searchKeywordDao.insert(SearchKeyword(key, 1))
         }

@@ -2,6 +2,7 @@ package io.legado.app.ui.book.info
 
 import android.annotation.SuppressLint
 import android.content.Intent
+import android.graphics.Color
 import android.os.Bundle
 import android.view.Menu
 import android.view.MenuItem
@@ -11,7 +12,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import io.legado.app.R
 import io.legado.app.base.VMBaseActivity
-import io.legado.app.constant.BookType
 import io.legado.app.constant.EventBus
 import io.legado.app.constant.Theme
 import io.legado.app.data.appDb
@@ -20,11 +20,16 @@ import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSource
 import io.legado.app.databinding.ActivityBookInfoBinding
 import io.legado.app.databinding.DialogEditTextBinding
+import io.legado.app.help.book.isAudio
+import io.legado.app.help.book.isLocal
+import io.legado.app.help.book.isLocalTxt
+import io.legado.app.help.config.AppConfig
 import io.legado.app.lib.dialogs.alert
 import io.legado.app.lib.theme.backgroundColor
 import io.legado.app.lib.theme.bottomBackground
 import io.legado.app.lib.theme.getPrimaryTextColor
 import io.legado.app.model.BookCover
+import io.legado.app.model.remote.RemoteBookWebDav
 import io.legado.app.ui.about.AppLogDialog
 import io.legado.app.ui.association.ImportOnLineBookFileDialog
 import io.legado.app.ui.book.audio.AudioPlayActivity
@@ -38,6 +43,7 @@ import io.legado.app.ui.book.source.edit.BookSourceEditActivity
 import io.legado.app.ui.book.toc.TocActivityResult
 import io.legado.app.ui.login.SourceLoginActivity
 import io.legado.app.ui.widget.dialog.PhotoDialog
+import io.legado.app.ui.widget.dialog.WaitDialog
 import io.legado.app.utils.*
 import io.legado.app.utils.viewbindingdelegate.viewBinding
 import kotlinx.coroutines.Dispatchers.IO
@@ -76,7 +82,7 @@ class BookInfoActivity :
     private val readBookResult = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) {
-        viewModel.refreshData(intent)
+        viewModel.upBook(intent)
         if (it.resultCode == RESULT_OK) {
             viewModel.inBookshelf = true
             upTvBookshelf()
@@ -96,7 +102,7 @@ class BookInfoActivity :
 
     @SuppressLint("PrivateResource")
     override fun onActivityCreated(savedInstanceState: Bundle?) {
-        binding.titleBar.transparent()
+        binding.titleBar.setBackgroundColor(Color.argb(60, 0, 0, 0))
         binding.arcView.setBgColor(backgroundColor)
         binding.llInfo.setBackgroundColor(backgroundColor)
         binding.scrollView.setBackgroundColor(backgroundColor)
@@ -128,7 +134,9 @@ class BookInfoActivity :
         menu.findItem(R.id.menu_can_update)?.isVisible =
             viewModel.bookSource != null
         menu.findItem(R.id.menu_split_long_chapter)?.isVisible =
-            viewModel.bookData.value?.isLocalTxt() ?: false
+            viewModel.bookData.value?.isLocalTxt ?: false
+        menu.findItem(R.id.menu_upload)?.isVisible =
+            viewModel.bookData.value?.isLocal ?: false
         return super.onMenuOpened(featureId, menu)
     }
 
@@ -155,10 +163,7 @@ class BookInfoActivity :
             R.id.menu_refresh -> {
                 upLoading(true)
                 viewModel.bookData.value?.let {
-                    if (it.isLocalBook()) {
-                        it.tocUrl = ""
-                    }
-                    viewModel.loadBookInfo(it, false)
+                    viewModel.refreshBook(it)
                 }
             }
             R.id.menu_login -> viewModel.bookSource?.let {
@@ -198,6 +203,26 @@ class BookInfoActivity :
                 item.isChecked = !item.isChecked
                 if (!item.isChecked) longToastOnUi(R.string.need_more_time_load_content)
             }
+
+            R.id.menu_upload -> {
+                launch {
+                    viewModel.bookData.value?.let {
+                        val waitDialog = WaitDialog(this@BookInfoActivity)
+                        waitDialog.setText("上传中.....")
+                        waitDialog.show()
+                        try {
+                            RemoteBookWebDav.upload(it)
+                            //更新书籍最后更新时间,使之比远程书籍的时间新
+                            it.lastCheckTime = System.currentTimeMillis()
+                            viewModel.saveBook(it)
+                        } catch (e: Exception) {
+                            toastOnUi(e.localizedMessage)
+                        } finally {
+                            waitDialog.dismiss()
+                        }
+                    }
+                }
+            }
         }
         return super.onCompatOptionsItemSelected(item)
     }
@@ -222,8 +247,10 @@ class BookInfoActivity :
 
     private fun showCover(book: Book) {
         binding.ivCover.load(book.getDisplayCover(), book.name, book.author, false, book.origin)
-        BookCover.loadBlur(this, book.getDisplayCover())
-            .into(binding.bgBook)
+        if(!AppConfig.isEInkMode) {
+            BookCover.loadBlur(this, book.getDisplayCover())
+                .into(binding.bgBook)
+        }
     }
 
     private fun upLoading(isLoading: Boolean, chapterList: List<BookChapter>? = null) {
@@ -232,7 +259,11 @@ class BookInfoActivity :
                 binding.tvToc.text = getString(R.string.toc_s, getString(R.string.loading))
             }
             chapterList.isNullOrEmpty() -> {
-                binding.tvToc.text = if (viewModel.isImportBookOnLine) getString(R.string.click_read_button_load) else getString(R.string.toc_s, getString(R.string.error_load_toc))
+                binding.tvToc.text =
+                    if (viewModel.isImportBookOnLine) getString(R.string.click_read_button_load) else getString(
+                        R.string.toc_s,
+                        getString(R.string.error_load_toc)
+                    )
             }
             else -> {
                 viewModel.bookData.value?.let {
@@ -242,6 +273,8 @@ class BookInfoActivity :
                     } else {
                         binding.tvToc.text = getString(R.string.toc_s, chapterList.last().title)
                     }
+                    binding.tvLasted.text =
+                        getString(R.string.lasted_show, chapterList.last().title)
                 }
             }
         }
@@ -300,9 +333,10 @@ class BookInfoActivity :
             }
         }
         tvOrigin.setOnClickListener {
-            viewModel.bookData.value?.let {
+            viewModel.bookData.value?.let { book ->
+                if (book.isLocal) return@let
                 startActivity<BookSourceEditActivity> {
-                    putExtra("sourceUrl", it.origin)
+                    putExtra("sourceUrl", book.origin)
                 }
             } ?: toastOnUi("Book is null")
         }
@@ -343,9 +377,14 @@ class BookInfoActivity :
 
     private fun setSourceVariable() {
         launch {
-            val variable = withContext(IO) { viewModel.bookSource?.getVariable() }
+            val source = viewModel.bookSource
+            if (source == null) {
+                toastOnUi("书源不存在")
+                return@launch
+            }
+            val variable = withContext(IO) { source.getVariable() }
             alert(R.string.set_source_variable) {
-                setMessage("源变量可在js中通过source.getVariable()获取")
+                setMessage(source.getDisplayVariableComment("源变量可在js中通过source.getVariable()获取"))
                 val alertBinding = DialogEditTextBinding.inflate(layoutInflater).apply {
                     editView.hint = "source variable"
                     editView.setText(variable)
@@ -364,9 +403,14 @@ class BookInfoActivity :
 
     private fun setBookVariable() {
         launch {
+            val source = viewModel.bookSource
+            if (source == null) {
+                toastOnUi("书源不存在")
+                return@launch
+            }
             val variable = withContext(IO) { viewModel.bookData.value?.getVariable("custom") }
             alert(R.string.set_source_variable) {
-                setMessage("""书籍变量可在js中通过book.getVariable("custom")获取""")
+                setMessage(source.getDisplayVariableComment("""书籍变量可在js中通过book.getVariable("custom")获取"""))
                 val alertBinding = DialogEditTextBinding.inflate(layoutInflater).apply {
                     editView.hint = "book variable"
                     editView.setText(variable)
@@ -392,7 +436,7 @@ class BookInfoActivity :
     @SuppressLint("InflateParams")
     private fun deleteBook() {
         viewModel.bookData.value?.let {
-            if (it.isLocalBook()) {
+            if (it.isLocal) {
                 alert(
                     titleResource = R.string.sure,
                     messageResource = R.string.sure_del
@@ -445,8 +489,8 @@ class BookInfoActivity :
     }
 
     private fun startReadActivity(book: Book) {
-        when (book.type) {
-            BookType.audio -> readBookResult.launch(
+        when {
+            book.isAudio -> readBookResult.launch(
                 Intent(this, AudioPlayActivity::class.java)
                     .putExtra("bookUrl", book.bookUrl)
                     .putExtra("inBookshelf", viewModel.inBookshelf)
@@ -491,7 +535,7 @@ class BookInfoActivity :
     }
 
     override fun observeLiveBus() {
-        observeEvent<String>(EventBus.BOOK_URL_CHANGED) {
+        observeEvent<String>(EventBus.FILE_SOURCE_DOWNLOAD_DONE) {
             viewModel.changeToLocalBook(it)
         }
     }
